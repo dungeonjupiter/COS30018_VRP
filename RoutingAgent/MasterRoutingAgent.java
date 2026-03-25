@@ -13,6 +13,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.IOException;
+import jade.core.behaviours.WakerBehaviour;
 
 public class MasterRoutingAgent extends Agent {
     private static final String MASTER_DF_TYPE = "vrp-master-routing";
@@ -22,7 +26,8 @@ public class MasterRoutingAgent extends Agent {
     private static final String ROUTE_CONVERSATION_ID = "vrp-route";
     private static final String CAPACITY_PREFIX = "CAPACITY:";
     private static final String ROUTE_PREFIX = "ROUTE:";
-    private static final int DEFAULT_EXPECTED_AGENTS = 3;
+    private static final int DEFAULT_EXPECTED_AGENTS = 4;
+    private boolean calculationTriggered = false;
 
     private final Map<String, Integer> capacities = new LinkedHashMap<>();
     private final List<String> agentNames = new ArrayList<>();
@@ -84,27 +89,28 @@ public class MasterRoutingAgent extends Agent {
 
         if (content != null && content.startsWith(CAPACITY_PREFIX)) {
             Integer cap = parseCapacity(content);
-            if (cap == null) {
-                System.out.println("MRA ignored malformed capacity message from " + senderName + ": " + content);
-                return;
-            }
-            if (cap <= 0) {
-                System.out.println("MRA ignored non-positive capacity from " + senderName + ": " + cap);
-                return;
-            }
+            if (cap != null && cap > 0) {
+                sendAck(msg);
 
-            // Always ACK valid messages so retried DAs can stop retrying.
-            sendAck(msg);
+                if (!capacities.containsKey(senderName)) {
+                    capacities.put(senderName, cap);
+                    agentNames.add(senderName);
+                    System.out.println("MRA received capacity from " + senderName + ": " + cap);
 
-            if (!capacities.containsKey(senderName)) {
-                capacities.put(senderName, cap);
-                agentNames.add(senderName);
-
-                System.out.println("MRA received capacity from " + senderName + ": " + cap);
-
-                if (capacities.size() >= expectedAgents && !routesSent) {
-                    assignDummyRoutes();
-                    routesSent = true;
+                    // FIX: Add a small delay (1 second) after the last expected agent arrives
+                    // to allow for JADE messaging overhead and prevent race conditions.
+                    if (capacities.size() >= expectedAgents && !calculationTriggered) {
+                        calculationTriggered = true;
+                        System.out.println("MRA: Fleet complete. Starting GA in 1s...");
+                        addBehaviour(new WakerBehaviour(this, 1000) {
+                            protected void onWake() {
+                                if (!routesSent) {
+                                    routesSent = true;
+                                    calculateOptimalRoutes(); //
+                                }
+                            }
+                        });
+                    }
                 }
             }
         }
@@ -156,6 +162,60 @@ public class MasterRoutingAgent extends Agent {
             send(routeMsg);
 
             System.out.println("MRA sent route to " + agentName + ": " + route);
+        }
+    }
+
+    // Inside MasterRoutingAgent.java
+    private void calculateOptimalRoutes() {
+        try {
+            System.out.println("MRA: Invoking Genetic Algorithm solver...");
+
+            // Prepare arguments for Python: "Agent1,Agent2" "5`,5"
+            String namesArg = String.join(",", agentNames);
+            String capsArg = capacities.values().toString().replaceAll("[\\[\\] ]", "");
+
+            ProcessBuilder pb = new ProcessBuilder("python", "GA.py", namesArg, capsArg);
+            pb.redirectErrorStream(true); // Merge error stream to see Python errors in Java console
+            Process p = pb.start();
+
+            BufferedReader in = new BufferedReader(new InputStreamReader(p.getInputStream()));
+            String result = "";
+            String line;
+            while ((line = in.readLine()) != null) {
+                result = line; // The last line printed by Python is our route string
+            }
+
+            if (result != null && result.contains(":")) {
+                parseAndSendRoutes(result);
+            } else {
+                System.out.println("MRA: GA returned invalid result, using dummy routes.");
+                assignDummyRoutes();
+            }
+
+        } catch (IOException e) {
+            System.err.println("MRA: Failed to run Python script. Ensure 'python' is in your PATH.");
+            assignDummyRoutes();
+        }
+    }
+
+    private void parseAndSendRoutes(String result) {
+        // Expected format: Agent1:0,1,2,0|Agent2:0,3,4,0
+        String[] individualRoutes = result.split("\\|");
+
+        for (String routeEntry : individualRoutes) {
+            String[] parts = routeEntry.split(":");
+            if (parts.length == 2) {
+                String targetAgent = parts[0];
+                String routePoints = parts[1];
+
+                ACLMessage routeMsg = new ACLMessage(ACLMessage.INFORM);
+                routeMsg.addReceiver(new jade.core.AID(targetAgent, jade.core.AID.ISLOCALNAME));
+                routeMsg.setConversationId(ROUTE_CONVERSATION_ID);
+                routeMsg.setContent(ROUTE_PREFIX + routePoints);
+
+                send(routeMsg);
+                System.out.println("MRA: Sent optimized route to " + targetAgent + ": " + routePoints);
+            }
         }
     }
 

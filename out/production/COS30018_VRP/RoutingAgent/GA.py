@@ -1,145 +1,135 @@
+import sys
 import random
 import numpy as np
 import matplotlib.pyplot as plt
 
-# --- CONFIGURATION & DATA ---
-# Warehouse is centered at (50, 50)
+# --- CONFIGURATION ---
 WAREHOUSE = (50, 50)
-NUM_CUSTOMERS = 20
 MAP_SIZE = 100
-
-# Generate 20 random customers: (x, y, demand)
-random.seed(42) # For consistent results
-LOCATIONS = [
-    (random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) 
-    for _ in range(NUM_CUSTOMERS)
-]
-
-VEHICLE_CAPACITY = 5 # Each vehicle carries 5 items
-POPULATION_SIZE = 100
-GENERATIONS = 200
-MUTATION_RATE = 0.2
+random.seed() # Keep seed consistent for testing
+NUM_CUSTOMERS = 20
+LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
 
 def calculate_distance(p1, p2):
     return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
-# --- GA CORE LOGIC ---
-
-def fitness(chromosome):
-    total_distance = 0
-    current_load = 0
+def fitness(chromosome, capacities):
+    total_dist = 0
     current_pos = WAREHOUSE
-    
-    for idx in chromosome:
-        loc = LOCATIONS[idx]
-        demand = loc[2]
-        if current_load + demand > VEHICLE_CAPACITY:
-            total_distance += calculate_distance(current_pos, WAREHOUSE)
+    v_idx = 0
+    current_load = 0
+    for cust_idx in chromosome:
+        demand = LOCATIONS[cust_idx][2]
+        limit = capacities[min(v_idx, len(capacities)-1)]
+        if current_load + demand > limit:
+            total_dist += calculate_distance(current_pos, WAREHOUSE)
             current_pos = WAREHOUSE
             current_load = 0
-        total_distance += calculate_distance(current_pos, (loc[0], loc[1]))
-        current_pos = (loc[0], loc[1])
+            v_idx += 1
+        total_dist += calculate_distance(current_pos, LOCATIONS[cust_idx][:2])
+        current_pos = LOCATIONS[cust_idx][:2]
         current_load += demand
-        
-    total_distance += calculate_distance(current_pos, WAREHOUSE)
-    return 1 / total_distance
+    total_dist += calculate_distance(current_pos, WAREHOUSE)
+    return 1 / total_dist
 
 def ordered_crossover(p1, p2):
     size = len(p1)
     a, b = sorted(random.sample(range(size), 2))
     child = [-1] * size
     child[a:b] = p1[a:b]
-    p2_filtered = [item for item in p2 if item not in child]
+    remaining = [item for item in p2 if item not in child]
     idx = 0
     for i in range(size):
         if child[i] == -1:
-            child[i] = p2_filtered[idx]
+            child[i] = remaining[idx]
             idx += 1
     return child
 
-def mutate(chromosome):
-    if random.random() < MUTATION_RATE:
-        i, j = random.sample(range(len(chromosome)), 2)
-        chromosome[i], chromosome[j] = chromosome[j], chromosome[i]
+def plot_and_format_result(best_chromosome, agent_names, capacities):
+    plt.figure(figsize=(10, 7))
+    plt.plot(WAREHOUSE[0], WAREHOUSE[1], 'rs', markersize=12, label='Warehouse', zorder=5)
 
-# --- VISUALIZATION ---
-
-def plot_routes(chromosome):
-    plt.figure(figsize=(12, 8))
-    
-    # 1. Plot Warehouse and Customers first
-    plt.plot(WAREHOUSE[0], WAREHOUSE[1], 'rs', markersize=15, label='Main Warehouse', zorder=5)
-    xs = [loc[0] for loc in LOCATIONS]
-    ys = [loc[1] for loc in LOCATIONS]
-    plt.scatter(xs, ys, c='black', alpha=0.5, s=30, zorder=4)
+    # Plot customer locations with labels
     for i, (x, y, d) in enumerate(LOCATIONS):
-        plt.text(x+1, y+1, f'C{i}', fontsize=8, fontweight='bold')
+        plt.scatter(x, y, c='blue', alpha=0.6, s=30, zorder=4)
+        plt.text(x+1, y+1, f'C{i+1}', fontsize=8)
 
-    # 2. Logic to track routes and build legend
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
-    current_pos = WAREHOUSE
-    current_load = 0
-    vehicle_id = 1
-    
-    # We will store the current vehicle's path to plot at once
-    path_x = [WAREHOUSE[0]]
-    path_y = [WAREHOUSE[1]]
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b']
+    output_parts = []
+    v_idx, current_load = 0, 0
+    path_x, path_y = [WAREHOUSE[0]], [WAREHOUSE[1]]
+    route_indices = ["0"]
 
-    for idx in chromosome:
-        loc = LOCATIONS[idx]
-        demand = loc[2]
-        
-        if current_load + demand > VEHICLE_CAPACITY:
-            # Finish current vehicle path by returning to warehouse
-            path_x.append(WAREHOUSE[0])
-            path_y.append(WAREHOUSE[1])
-            
-            # Plot the completed route for this vehicle
-            plt.plot(path_x, path_y, color=colors[(vehicle_id-1) % len(colors)], 
-                     linewidth=2.5, label=f'Vehicle {vehicle_id} ({current_load} items)', zorder=3)
-            
-            # Reset for next vehicle
-            vehicle_id += 1
+    for cust_idx in best_chromosome:
+        loc = LOCATIONS[cust_idx]
+        limit = capacities[min(v_idx, len(capacities)-1)]
+
+        if current_load + loc[2] > limit:
+            # Close loop to warehouse
+            path_x.append(WAREHOUSE[0]); path_y.append(WAREHOUSE[1])
+            route_indices.append("0")
+
+            aname = agent_names[min(v_idx, len(agent_names)-1)]
+            plt.plot(path_x, path_y, color=colors[v_idx % len(colors)], linewidth=2,
+                     label=f"{aname} (Cap: {limit})")
+            output_parts.append(f"{aname}:{','.join(route_indices)}")
+
+            # CRITICAL FIX: Only move to next agent if available
+            if v_idx < len(agent_names) - 1:
+                v_idx += 1
+            else:
+                print(f"DEBUG: Agent {aname} forced to take additional load!")
+
             current_load = 0
-            path_x = [WAREHOUSE[0]]
-            path_y = [WAREHOUSE[1]]
-        
-        path_x.append(loc[0])
-        path_y.append(loc[1])
-        current_load += demand
+            path_x, path_y = [WAREHOUSE[0]], [WAREHOUSE[1]]
+            route_indices = ["0"]
 
-    # Plot the very last vehicle's route
-    path_x.append(WAREHOUSE[0])
-    path_y.append(WAREHOUSE[1])
-    plt.plot(path_x, path_y, color=colors[(vehicle_id-1) % len(colors)], 
-             linewidth=2.5, label=f'Vehicle {vehicle_id} ({current_load} items)', zorder=3)
+        path_x.append(loc[0]); path_y.append(loc[1])
+        route_indices.append(str(cust_idx + 1))
+        current_load += loc[2]
 
-    # 3. Formatting the Plot
-    plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {1/fitness(chromosome):.2f}", fontsize=14)
-    plt.xlabel("X Coordinate (km)")
-    plt.ylabel("Y Coordinate (km)")
-    
-    # Place legend outside the plot so it doesn't cover the routes
-    plt.legend(loc='upper left', bbox_to_anchor=(1, 1), title="Route Assignments", fontsize='small')
-    
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.tight_layout() # Adjust layout to make room for legend
-    plt.show()
+    # Handle final vehicle path
+    path_x.append(WAREHOUSE[0]); path_y.append(WAREHOUSE[1])
+    route_indices.append("0")
+    aname = agent_names[min(v_idx, len(agent_names)-1)]
+    plt.plot(path_x, path_y, color=colors[v_idx % len(colors)], linewidth=2,
+             label=f"{aname} (Cap: {capacities[min(v_idx, len(capacities)-1)]})")
+    output_parts.append(f"{aname}:{','.join(route_indices)}")
 
-# --- RUN ---
-pop = [list(range(len(LOCATIONS))) for _ in range(POPULATION_SIZE)]
-for p in pop: random.shuffle(p)
+    plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {1/fitness(best_chromosome, capacities):.2f}")
+    plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.tight_layout()
+    plt.show(block=True)
+    return "|".join(output_parts)
 
-for gen in range(GENERATIONS):
-    pop = sorted(pop, key=lambda x: fitness(x), reverse=True)
-    next_gen = pop[:10] # Elitism
-    while len(next_gen) < POPULATION_SIZE:
-        p1, p2 = random.sample(pop[:30], 2)
-        child = ordered_crossover(p1, p2)
-        mutate(child)
-        next_gen.append(child)
-    pop = next_gen
-    if gen % 50 == 0:
-        print(f"Gen {gen} | Best Dist: {1/fitness(pop[0]):.2f}")
+if __name__ == "__main__":
+    if len(sys.argv) > 2:
+        names = sys.argv[1].split(',')
+        caps = [int(c) for c in sys.argv[2].split(',')]
 
-plot_routes(pop[0])
+        pop_size = 200
+        generations = 800
+        MUTATION_RATE = 0.4  # High mutation rate helps break out of messy lines
+
+        pop = [list(range(NUM_CUSTOMERS)) for _ in range(pop_size)]
+
+        for _ in range(generations):
+            pop = sorted(pop, key=lambda x: fitness(x, caps), reverse=True)
+            next_gen = pop[:10] # Elitism
+
+            while len(next_gen) < pop_size:
+                p1, p2 = random.sample(pop[:50], 2)
+                child = ordered_crossover(p1, p2)
+
+                # --- THIS IS THE CRITICAL MISSING MUTATION STEP ---
+                if random.random() < MUTATION_RATE:
+                    idx1, idx2 = random.sample(range(NUM_CUSTOMERS), 2)
+                    child[idx1], child[idx2] = child[idx2], child[idx1]
+                # --------------------------------------------------
+
+                next_gen.append(child)
+
+            pop = next_gen
+
+        print(plot_and_format_result(pop[0], names, caps))

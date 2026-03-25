@@ -1,4 +1,4 @@
-package RoutingAgent;
+package RoutingAgent.RoutingAgent;
 
 import jade.core.AID;
 import jade.core.Agent;

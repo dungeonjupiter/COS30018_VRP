@@ -1,4 +1,4 @@
-package RoutingAgent;
+package RoutingAgent.RoutingAgent;
 
 import jade.core.Agent;
 import jade.core.behaviours.CyclicBehaviour;

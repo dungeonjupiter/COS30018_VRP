@@ -1,4 +1,4 @@
-package RoutingAgent;
+package RoutingAgent.RoutingAgent;
 
 import java.awt.BorderLayout;
 import java.awt.Dimension;

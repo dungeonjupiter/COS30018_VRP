@@ -40,6 +40,33 @@ public class DeliveryAgent extends Agent {
     private List<String> currentStops = new ArrayList<>();
     private int currentStopIndex = 0;
 
+    private String shortLabel(ACLMessage msg) {
+        String convId = msg.getConversationId();
+        String content = msg.getContent();
+
+        if (CAPACITY_CONVERSATION_ID.equals(convId)) return "CAPACITY";
+        if (CAPACITY_ACK_CONVERSATION_ID.equals(convId)) return "ACK";
+        if (ROUTE_CONVERSATION_ID.equals(convId)) return "ROUTE";
+        return ACLMessage.getPerformative(msg.getPerformative());
+    }
+
+    private void logMessage(String direction, ACLMessage msg) {
+        if (msg == null) return;
+
+        String sender = msg.getSender() != null ? msg.getSender().getLocalName() : "null";
+        String receiver = msg.getAllReceiver().hasNext()
+                ? ((AID) msg.getAllReceiver().next()).getLocalName()
+                : "none";
+
+        String arrow = "SEND".equals(direction)
+                ? sender + " -> " + receiver
+                : sender + " -> " + getLocalName();
+
+        System.out.println("[MSG][" + shortLabel(msg) + "] "
+                + arrow
+                + " | " + (msg.getContent() != null ? msg.getContent() : "<no-content>"));
+    }
+
     protected void setup() {
         System.out.println(getLocalName() + " started.");
 
@@ -59,6 +86,7 @@ public class DeliveryAgent extends Agent {
                 ACLMessage ack = myAgent.receive(ackTemplate);
                 if (ack != null) {
                     capacityAckReceived = true;
+                    logMessage("RECV", ack);
                     System.out.println(getLocalName() + " received capacity ACK from MRA.");
                     return;
                 }
@@ -94,6 +122,7 @@ public class DeliveryAgent extends Agent {
 
                 if (msg != null) {
                     String content = msg.getContent();
+                    logMessage("RECV", msg);
                     System.out.println(getLocalName() + " received route: " + content);
 
                     if (content != null && content.startsWith(ROUTE_PREFIX)) {
@@ -165,6 +194,7 @@ public class DeliveryAgent extends Agent {
         msg.setContent("CAPACITY:" + capacity);
 
         send(msg);
+        logMessage("SEND", msg);
         System.out.println(getLocalName() + " sent capacity to MRA (attempt "
                 + capacityAttempts + "/" + MAX_CAPACITY_ATTEMPTS + "): " + capacity);
     }

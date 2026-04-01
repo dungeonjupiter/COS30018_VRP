@@ -45,6 +45,32 @@ public class MasterRoutingAgent extends Agent {
 
     private MRAGui myGui;
 
+    private String shortLabel(ACLMessage msg) {
+        String convId = msg.getConversationId();
+
+        if (CAPACITY_CONVERSATION_ID.equals(convId)) return "CAPACITY";
+        if (CAPACITY_ACK_CONVERSATION_ID.equals(convId)) return "ACK";
+        if (ROUTE_CONVERSATION_ID.equals(convId)) return "ROUTE";
+        return ACLMessage.getPerformative(msg.getPerformative());
+    }
+
+    private void logMessage(String direction, ACLMessage msg) {
+        if (msg == null) return;
+
+        String sender = msg.getSender() != null ? msg.getSender().getLocalName() : "null";
+        String receiver = msg.getAllReceiver().hasNext()
+                ? ((jade.core.AID) msg.getAllReceiver().next()).getLocalName()
+                : "none";
+
+        String arrow = "SEND".equals(direction)
+                ? sender + " -> " + receiver
+                : sender + " -> " + getLocalName();
+
+        System.out.println("[MSG][" + shortLabel(msg) + "] "
+                + arrow
+                + " | " + (msg.getContent() != null ? msg.getContent() : "<no-content>"));
+    }
+
     protected void setup() {
         System.out.println("MRA started. Waiting for GUI configuration...");
         registerService();
@@ -57,6 +83,7 @@ public class MasterRoutingAgent extends Agent {
                 MessageTemplate mt = MessageTemplate.MatchConversationId(CAPACITY_CONVERSATION_ID);
                 ACLMessage msg = myAgent.receive(mt);
                 if (msg != null) {
+                    logMessage("RECV", msg);
                     handleCapacityMessage(msg);
                 } else {
                     block();
@@ -167,6 +194,7 @@ public class MasterRoutingAgent extends Agent {
         reply.setConversationId(CAPACITY_ACK_CONVERSATION_ID);
         reply.setContent("ACK:capacity received");
         send(reply);
+        logMessage("SEND", reply);
     }
 
     private void calculateOptimalRoutes() {
@@ -219,6 +247,7 @@ public class MasterRoutingAgent extends Agent {
                 routeMsg.setConversationId(ROUTE_CONVERSATION_ID);
                 routeMsg.setContent(ROUTE_PREFIX + routePoints);
                 send(routeMsg);
+                logMessage("SEND", routeMsg);
                 System.out.println("MRA: Sent optimized route to " + targetAgent + ": " + routePoints);
             }
         }

@@ -101,33 +101,58 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()
 
-    #Print and Flush BEFORE blocking the GUI
     final_output = "|".join(output_parts)
-    print(final_output, flush=True) # flush=True forces the data out to Java immediately
+
+    print("FINAL_ROUTES:" + final_output, flush=True)
 
     plt.show(block=True)
-
     return final_output
 
 if __name__ == "__main__":
-    # Now expecting 3 arguments: Names, Capacities, CustomerCount
-    if len(sys.argv) > 3:
+    # Expecting 4 args: Names, Capacities, CustomerCount, FilePath
+    if len(sys.argv) > 4:
         names = sys.argv[1].split(',')
         caps = [int(c) for c in sys.argv[2].split(',')]
+        file_path = sys.argv[4]
 
-        # Override the global configurations with user inputs
-        NUM_CUSTOMERS = int(sys.argv[3])
-        LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
+        # --- FILE LOADING LOGIC ---
+        if file_path != "RANDOM":
+            LOCATIONS = []
+            try:
+                with open(file_path, 'r') as f:
+                    for line in f:
+                        if line.strip(): # Skip empty lines
+                            x, y, d = map(int, line.strip().split(','))
+                            LOCATIONS.append((x, y, d))
+                NUM_CUSTOMERS = len(LOCATIONS)
+                print(f"Loaded {NUM_CUSTOMERS} customers from file.", flush=True)
+            except Exception as e:
+                print(f"Error reading file: {e}. Falling back to random.", flush=True)
+                NUM_CUSTOMERS = int(sys.argv[3])
+                LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
+        else:
+            NUM_CUSTOMERS = int(sys.argv[3])
+            LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
 
+        # --- GA SETUP ---
         pop_size = 200
         generations = 800
         MUTATION_RATE = 0.4
 
         pop = [list(range(NUM_CUSTOMERS)) for _ in range(pop_size)]
 
-        for _ in range(generations):
+        print("Starting Genetic Algorithm optimization...", flush=True)
+
+        # --- EVOLUTION LOOP WITH TERMINAL OUTPUT ---
+        for gen in range(generations):
             pop = sorted(pop, key=lambda x: fitness(x, caps), reverse=True)
             next_gen = pop[:10] # Elitism
+
+            # Print progress every 100 generations
+            if gen % 100 == 0:
+                current_best_dist = 1 / fitness(pop[0], caps)
+                # flush=True pushes this print directly to the Java console instantly
+                print(f"Generation {gen:03d} | Best Distance: {current_best_dist:.2f}", flush=True)
 
             while len(next_gen) < pop_size:
                 p1, p2 = random.sample(pop[:50], 2)
@@ -141,4 +166,8 @@ if __name__ == "__main__":
 
             pop = next_gen
 
-        print(plot_and_format_result(pop[0], names, caps))
+        # Final generation output
+        final_best_dist = 1 / fitness(pop[0], caps)
+        print(f"Generation {generations} | Final Best Distance: {final_best_dist:.2f}", flush=True)
+
+        plot_and_format_result(pop[0], names, caps)

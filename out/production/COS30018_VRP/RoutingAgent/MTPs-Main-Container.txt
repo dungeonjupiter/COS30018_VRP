@@ -1,1 +1,1 @@
-http://LAPTOP-UFF0EKD1.suts.internal:7778/acc
+http://LAPTOP-UFF0EKD1:7778/acc

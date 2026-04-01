@@ -100,17 +100,28 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
     plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()
+
+    #Print and Flush BEFORE blocking the GUI
+    final_output = "|".join(output_parts)
+    print(final_output, flush=True) # flush=True forces the data out to Java immediately
+
     plt.show(block=True)
-    return "|".join(output_parts)
+
+    return final_output
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
+    # Now expecting 3 arguments: Names, Capacities, CustomerCount
+    if len(sys.argv) > 3:
         names = sys.argv[1].split(',')
         caps = [int(c) for c in sys.argv[2].split(',')]
 
+        # Override the global configurations with user inputs
+        NUM_CUSTOMERS = int(sys.argv[3])
+        LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
+
         pop_size = 200
         generations = 800
-        MUTATION_RATE = 0.4  # High mutation rate helps break out of messy lines
+        MUTATION_RATE = 0.4
 
         pop = [list(range(NUM_CUSTOMERS)) for _ in range(pop_size)]
 
@@ -122,11 +133,9 @@ if __name__ == "__main__":
                 p1, p2 = random.sample(pop[:50], 2)
                 child = ordered_crossover(p1, p2)
 
-                # --- THIS IS THE CRITICAL MISSING MUTATION STEP ---
                 if random.random() < MUTATION_RATE:
                     idx1, idx2 = random.sample(range(NUM_CUSTOMERS), 2)
                     child[idx1], child[idx2] = child[idx2], child[idx1]
-                # --------------------------------------------------
 
                 next_gen.append(child)
 

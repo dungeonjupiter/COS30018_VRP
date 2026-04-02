@@ -4,73 +4,90 @@ import math
 import copy
 import matplotlib.pyplot as plt
 
-# --- 1. CONFIGURATION ---
+# --- CONFIGURATION ---
 WAREHOUSE = (50, 50)
 MAP_SIZE = 100
-random.seed() # Keeps seed dynamic, matching GA.py behavior
+DEFAULT_CUSTOMERS = 20
+DEFAULT_ITERATIONS = 800
+DEFAULT_TABU_TENURE = 15
+random.seed()
+LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(DEFAULT_CUSTOMERS)]
+
 
 def calculate_distance(p1, p2):
-    return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+    return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
-# --- 2. TABU SEARCH ENGINE ---
+
+def load_locations(num_customers, file_path):
+    if file_path != "RANDOM":
+        locations = []
+        try:
+            with open(file_path, "r", encoding="utf-8") as file_handle:
+                for line in file_handle:
+                    if line.strip():
+                        x, y, demand = map(int, line.strip().split(","))
+                        locations.append((x, y, demand))
+
+            print(f"Loaded {len(locations)} customers from file.", flush=True)
+            return locations
+        except Exception as exc:
+            print(f"Error reading file: {exc}. Falling back to random.", flush=True)
+
+    return [
+        (random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1)
+        for _ in range(num_customers)
+    ]
+
+
 class TabuVRP:
-    def __init__(self, num_customers, capacities, agent_names):
-        self.num_customers = num_customers
+    def __init__(self, locations, capacities, agent_names):
+        self.locations = locations
+        self.num_customers = len(locations)
         self.capacities = capacities
         self.agent_names = agent_names
-
-        # Generate random map locations (x, y, demand=1)
-        self.locations = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(num_customers)]
-        self.customer_ids = list(range(num_customers))
+        self.customer_ids = list(range(self.num_customers))
 
     def calculate_cost(self, sequence):
         total_dist = 0
         current_pos = WAREHOUSE
-        v_idx = 0
         current_load = 0
-        routes = {name: [] for name in self.agent_names}
+        v_idx = 0
 
         for cust_idx in sequence:
             demand = self.locations[cust_idx][2]
-            # Safely get capacity for the current vehicle
-            limit = self.capacities[min(v_idx, len(self.capacities)-1)]
+            limit = self.capacities[min(v_idx, len(self.capacities) - 1)]
 
-            # If adding this customer exceeds the vehicle's capacity
             if current_load + demand > limit:
-                total_dist += calculate_distance(current_pos, WAREHOUSE) # Return to warehouse
+                total_dist += calculate_distance(current_pos, WAREHOUSE)
                 current_pos = WAREHOUSE
                 current_load = 0
-                v_idx += 1
 
-                # Apply heavy penalty if we run out of vehicles
-                if v_idx >= len(self.agent_names):
+                if v_idx < len(self.agent_names) - 1:
+                    v_idx += 1
+                else:
                     total_dist += 99999
-                    break
 
             total_dist += calculate_distance(current_pos, self.locations[cust_idx][:2])
-            routes[self.agent_names[min(v_idx, len(self.agent_names)-1)]].append(cust_idx)
             current_pos = self.locations[cust_idx][:2]
             current_load += demand
 
-        # Last vehicle returns to warehouse
         total_dist += calculate_distance(current_pos, WAREHOUSE)
-        return total_dist, routes
+        return total_dist
 
-    def run(self, iterations=800, tabu_tenure=15):
-        # flush=True pushes the log instantly to the JADE console
+    def run(self, iterations=DEFAULT_ITERATIONS, tabu_tenure=DEFAULT_TABU_TENURE):
         print("Starting Tabu Search optimization...", flush=True)
 
         current_sol = random.sample(self.customer_ids, len(self.customer_ids))
         best_sol = copy.deepcopy(current_sol)
-        best_cost, _ = self.calculate_cost(best_sol)
+        best_cost = self.calculate_cost(best_sol)
         tabu_list = {}
 
-        for i in range(iterations):
+        for iteration in range(iterations):
             neighbors = []
-
-            # Generate neighborhood subset (keeps execution fast)
             num_swaps = min(40, len(self.customer_ids) * (len(self.customer_ids) - 1) // 2)
-            if num_swaps < 1: num_swaps = 1
+
+            if num_swaps < 1:
+                num_swaps = 1
 
             for _ in range(num_swaps):
                 idx1, idx2 = random.sample(range(self.num_customers), 2)
@@ -80,13 +97,12 @@ class TabuVRP:
                 neighbors.append((neighbor, move))
 
             best_neighbor = None
-            best_neighbor_cost = float('inf')
+            best_neighbor_cost = float("inf")
             chosen_move = None
 
             for neighbor, move in neighbors:
-                cost, _ = self.calculate_cost(neighbor)
+                cost = self.calculate_cost(neighbor)
 
-                # Aspiration criterion: accept Tabu move if it yields a global best
                 if move not in tabu_list or cost < best_cost:
                     if cost < best_neighbor_cost:
                         best_neighbor_cost = cost
@@ -101,95 +117,130 @@ class TabuVRP:
                     best_cost = best_neighbor_cost
                     best_sol = copy.deepcopy(best_neighbor)
 
-            # Decay tabu tenure
-            tabu_list = {m: t-1 for m, t in tabu_list.items() if t > 1}
+            tabu_list = {move: tenure - 1 for move, tenure in tabu_list.items() if tenure > 1}
 
-            # Mimic GA's progress logging for the Java console
-            if i % 100 == 0:
-                print(f"Iteration {i:03d} | Best Distance: {best_cost:.2f}", flush=True)
+            if iteration % 100 == 0:
+                print(f"Iteration {iteration:03d} | Best Distance: {best_cost:.2f}", flush=True)
 
+        print(f"Iteration {iterations} | Final Best Distance: {best_cost:.2f}", flush=True)
         return best_sol
 
-    # --- Temporary visualisation ---
-def plot_routes(locations, routes, warehouse):
-    plt.figure(figsize=(8, 8))
 
-    # 1. Plot Warehouse
-    plt.plot(warehouse[0], warehouse[1], 'rs', markersize=10, label='Warehouse')
+def plot_and_format_result(best_sequence, locations, agent_names, capacities, show_gui=True):
+    plt.figure(figsize=(10, 7))
+    plt.plot(WAREHOUSE[0], WAREHOUSE[1], "rs", markersize=12, label="Warehouse", zorder=5)
 
-    # 2. Plot Customers
-    customer_x = [loc[0] for loc in locations]
-    customer_y = [loc[1] for loc in locations]
-    plt.scatter(customer_x, customer_y, c='blue', label='Customers')
+    for idx, (x, y, _demand) in enumerate(locations):
+        plt.scatter(x, y, c="blue", alpha=0.6, s=30, zorder=4)
+        plt.text(x + 1, y + 1, f"C{idx + 1}", fontsize=8)
 
-    # Add labels to customers
-    for i, (x, y, _) in enumerate(locations):
-        plt.text(x + 1, y + 1, str(i), fontsize=9)
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+    output_parts = []
+    v_idx = 0
+    current_load = 0
+    path_x = [WAREHOUSE[0]]
+    path_y = [WAREHOUSE[1]]
+    route_indices = ["0"]
 
-    # 3. Plot Routes for each agent
-    colors = ['green', 'orange', 'purple', 'cyan', 'brown']
-    for i, (agent, path) in enumerate(routes.items()):
-        if not path: continue
+    def draw_route(path_points, color, label):
+        xs = [point[0] for point in path_points]
+        ys = [point[1] for point in path_points]
+        if len(path_points) > 1:
+            solid_points = path_points[:-1]
+            if len(solid_points) > 1:
+                solid_x = [point[0] for point in solid_points]
+                solid_y = [point[1] for point in solid_points]
+                plt.plot(solid_x, solid_y, color=color, linewidth=1.2, alpha=0.35)
+                plt.plot(solid_x, solid_y, color=color, linewidth=2, label=label)
 
-        # Color for this agent
-        color = colors[i % len(colors)]
+            return_x = [path_points[-2][0], path_points[-1][0]]
+            return_y = [path_points[-2][1], path_points[-1][1]]
+            plt.plot(return_x, return_y, color=color, linewidth=2, linestyle=":")
+        else:
+            plt.plot(xs, ys, color=color, linewidth=2, label=label)
 
-        # Start from Warehouse
-        curr_x, curr_y = warehouse
-        for node_idx in path:
-            next_x, next_y = locations[node_idx][0], locations[node_idx][1]
-            plt.annotate('', xy=(next_x, next_y), xytext=(curr_x, curr_y),
-                         arrowprops=dict(arrowstyle='->', color=color, lw=1.5))
-            curr_x, curr_y = next_x, next_y
+        for index, (start, end) in enumerate(zip(path_points, path_points[1:])):
+            linestyle = ":" if index == len(path_points) - 2 else "-"
+            plt.annotate(
+                "",
+                xy=end,
+                xytext=start,
+                arrowprops=dict(arrowstyle="->", color=color, lw=1.8, linestyle=linestyle, shrinkA=0, shrinkB=0),
+            )
 
-        # Return to Warehouse
-        plt.annotate('', xy=(warehouse[0], warehouse[1]), xytext=(curr_x, curr_y),
-                     arrowprops=dict(arrowstyle='->', color=color, lw=1.5, ls='--'))
+    for cust_idx in best_sequence:
+        loc = locations[cust_idx]
+        limit = capacities[min(v_idx, len(capacities) - 1)]
 
-    plt.title("Tabu Search Optimized Routes")
-    plt.xlabel("X Coordinate")
-    plt.ylabel("Y Coordinate")
-    plt.legend()
-    plt.grid(True)
-    plt.show() # This will pause the script until you close the window
+        if current_load + loc[2] > limit:
+            path_x.append(WAREHOUSE[0])
+            path_y.append(WAREHOUSE[1])
+            route_indices.append("0")
 
+            agent_name = agent_names[min(v_idx, len(agent_names) - 1)]
+            route_points = list(zip(path_x, path_y))
+            draw_route(route_points, colors[v_idx % len(colors)], f"{agent_name} (Cap: {limit})")
+            output_parts.append(f"{agent_name}:{','.join(route_indices)}")
 
-# --- 3. JADE COMMUNICATION BRIDGE ---
-if __name__ == "__main__":
-    # Java passes 4 arguments: namesArg, capsArg, targetCustomerCount, dataFile
-    if len(sys.argv) > 3:
-        try:
-            # 1. Parse arguments from Java
-            agent_names = sys.argv[1].split(',')
-            capacities = [int(c) for c in sys.argv[2].split(',')]
-            num_customers = int(sys.argv[3])
-            # data_file = sys.argv[4] # Captured but not used in this basic random version
+            if v_idx < len(agent_names) - 1:
+                v_idx += 1
+            else:
+                print(f"DEBUG: Agent {agent_name} forced to take additional load!", flush=True)
 
-            # 2. Initialize and run Tabu Search solver
-            solver = TabuVRP(num_customers, capacities, agent_names)
-            best_chromosome = solver.run(iterations=800, tabu_tenure=15)
-            _, final_routes = solver.calculate_cost(best_chromosome)
+            current_load = 0
+            path_x = [WAREHOUSE[0]]
+            path_y = [WAREHOUSE[1]]
+            route_indices = ["0"]
 
-            # 3. Format output strictly for Java parsing
-            # Your Java MRA expects: AgentName:node,node|AgentName:node...
-            output_parts = []
-            for agent in agent_names:
-                route = final_routes.get(agent, [])
-                route_str = ",".join(map(str, route))
+        path_x.append(loc[0])
+        path_y.append(loc[1])
+        route_indices.append(str(cust_idx + 1))
+        current_load += loc[2]
 
-                # To ensure Java's .split(":") results in length 2,
-                # we only add agents that actually have tasks.
-                if len(route) > 0:
-                    output_parts.append(f"{agent}:{route_str}")
+    path_x.append(WAREHOUSE[0])
+    path_y.append(WAREHOUSE[1])
+    route_indices.append("0")
+    agent_name = agent_names[min(v_idx, len(agent_names) - 1)]
+    route_points = list(zip(path_x, path_y))
+    draw_route(
+        route_points,
+        colors[v_idx % len(colors)],
+        f"{agent_name} (Cap: {capacities[min(v_idx, len(capacities) - 1)]})",
+    )
+    output_parts.append(f"{agent_name}:{','.join(route_indices)}")
 
-            final_output = "|".join(output_parts)
+    total_distance = TabuVRP(locations, capacities, agent_names).calculate_cost(best_sequence)
+    plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {total_distance:.2f}")
+    plt.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.tight_layout()
 
-            # 4. Final Transmission with the REQUIRED Java Prefix
-            # Java is looking for "FINAL_ROUTES:" to stop the loop and start parsing.
-            print(f"FINAL_ROUTES:{final_output}", flush=True)
+    final_output = "|".join(output_parts)
+    print("FINAL_ROUTES:" + final_output, flush=True)
 
-        except Exception as e:
-            # If it fails, print the error so it shows up in the JADE console
-            print(f"PYTHON_ERROR: {str(e)}", flush=True)
+    if show_gui:
+        plt.show(block=True)
     else:
-        print("PYTHON_ERROR: Missing arguments from MRA.", flush=True)
+        plt.close()
+
+    return final_output
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 4:
+        names = sys.argv[1].split(",")
+        caps = [int(cap) for cap in sys.argv[2].split(",")]
+        target_customer_count = int(sys.argv[3])
+        file_path = sys.argv[4]
+
+        LOCATIONS = load_locations(target_customer_count, file_path)
+        solver = TabuVRP(LOCATIONS, caps, names)
+        best_sequence = solver.run(iterations=DEFAULT_ITERATIONS, tabu_tenure=DEFAULT_TABU_TENURE)
+        plot_and_format_result(best_sequence, LOCATIONS, names, caps, show_gui=True)
+    else:
+        debug_names = ["Vehicle1", "Vehicle2", "Vehicle3"]
+        debug_capacities = [7, 7, 7]
+        LOCATIONS = load_locations(12, "RANDOM")
+        solver = TabuVRP(LOCATIONS, debug_capacities, debug_names)
+        best_sequence = solver.run(iterations=120, tabu_tenure=8)
+        plot_and_format_result(best_sequence, LOCATIONS, debug_names, debug_capacities, show_gui=True)

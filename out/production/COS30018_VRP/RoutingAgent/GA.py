@@ -60,6 +60,32 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
     path_x, path_y = [WAREHOUSE[0]], [WAREHOUSE[1]]
     route_indices = ["0"]
 
+    def draw_route(path_points, color, label):
+        xs = [point[0] for point in path_points]
+        ys = [point[1] for point in path_points]
+        if len(path_points) > 1:
+            solid_points = path_points[:-1]
+            if len(solid_points) > 1:
+                solid_x = [point[0] for point in solid_points]
+                solid_y = [point[1] for point in solid_points]
+                plt.plot(solid_x, solid_y, color=color, linewidth=1.2, alpha=0.35)
+                plt.plot(solid_x, solid_y, color=color, linewidth=2, label=label)
+
+            return_x = [path_points[-2][0], path_points[-1][0]]
+            return_y = [path_points[-2][1], path_points[-1][1]]
+            plt.plot(return_x, return_y, color=color, linewidth=2, linestyle=':')
+        else:
+            plt.plot(xs, ys, color=color, linewidth=2, label=label)
+
+        for index, (start, end) in enumerate(zip(path_points, path_points[1:])):
+            linestyle = ':' if index == len(path_points) - 2 else '-'
+            plt.annotate(
+                '',
+                xy=end,
+                xytext=start,
+                arrowprops=dict(arrowstyle='->', color=color, lw=1.8, linestyle=linestyle, shrinkA=0, shrinkB=0),
+            )
+
     for cust_idx in best_chromosome:
         loc = LOCATIONS[cust_idx]
         limit = capacities[min(v_idx, len(capacities)-1)]
@@ -70,8 +96,8 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
             route_indices.append("0")
 
             aname = agent_names[min(v_idx, len(agent_names)-1)]
-            plt.plot(path_x, path_y, color=colors[v_idx % len(colors)], linewidth=2,
-                     label=f"{aname} (Cap: {limit})")
+            route_points = list(zip(path_x, path_y))
+            draw_route(route_points, colors[v_idx % len(colors)], f"{aname} (Cap: {limit})")
             output_parts.append(f"{aname}:{','.join(route_indices)}")
 
             # CRITICAL FIX: Only move to next agent if available
@@ -92,8 +118,8 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
     path_x.append(WAREHOUSE[0]); path_y.append(WAREHOUSE[1])
     route_indices.append("0")
     aname = agent_names[min(v_idx, len(agent_names)-1)]
-    plt.plot(path_x, path_y, color=colors[v_idx % len(colors)], linewidth=2,
-             label=f"{aname} (Cap: {capacities[min(v_idx, len(capacities)-1)]})")
+    route_points = list(zip(path_x, path_y))
+    draw_route(route_points, colors[v_idx % len(colors)], f"{aname} (Cap: {capacities[min(v_idx, len(capacities)-1)]})")
     output_parts.append(f"{aname}:{','.join(route_indices)}")
 
     plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {1/fitness(best_chromosome, capacities):.2f}")

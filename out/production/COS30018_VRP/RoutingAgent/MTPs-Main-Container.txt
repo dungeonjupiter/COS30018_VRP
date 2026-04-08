@@ -1,1 +1,1 @@
-http://JONG-HPELITEBOOK.suts.internal:7778/acc
+http://Nephthyss:7778/acc

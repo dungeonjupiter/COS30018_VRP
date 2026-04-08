@@ -122,7 +122,19 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
     draw_route(route_points, colors[v_idx % len(colors)], f"{aname} (Cap: {capacities[min(v_idx, len(capacities)-1)]})")
     output_parts.append(f"{aname}:{','.join(route_indices)}")
 
-    plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {1/fitness(best_chromosome, capacities):.2f}")
+    # Loop through any agents that weren't used during the routing
+    for i in range(v_idx + 1, len(agent_names)):
+        standby_agent = agent_names[i]
+        standby_cap = capacities[i]
+        standby_color = colors[i % len(colors)]
+
+        # Add an empty line to the plot purely so it shows up in the legend
+        plt.plot([], [], color=standby_color, linewidth=2, linestyle=':', label=f"{standby_agent} (Standby Cap: {standby_cap})")
+
+        # Add the agent to the final output string with just the warehouse node (0)
+        output_parts.append(f"{standby_agent}:0")
+
+    plt.title(f"MRA Optimized Delivery Plan (Genetic Algorithm)\nTotal Logistics Distance: {1/fitness(best_chromosome, capacities):.2f}")
     plt.legend(loc='upper left', bbox_to_anchor=(1, 1))
     plt.grid(True, linestyle=':', alpha=0.6)
     plt.tight_layout()

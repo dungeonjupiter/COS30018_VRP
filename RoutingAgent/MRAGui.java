@@ -15,7 +15,8 @@ public class MRAGui extends JFrame {
         super("MRA System Configuration");
         myAgent = a;
 
-        JPanel panel = new JPanel(new GridLayout(4, 2, 10, 10));
+        // Increased to 5 rows to make room for the Algorithm dropdown
+        JPanel panel = new JPanel(new GridLayout(5, 2, 10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
 
         // Row 1: Customers
@@ -28,7 +29,13 @@ public class MRAGui extends JFrame {
         JTextField agentsField = new JTextField("3");
         panel.add(agentsField);
 
-        // Row 3: File Selection & Clear Button
+        // Row 3: Algorithm Selection
+        panel.add(new JLabel("Optimization Algorithm:"));
+        String[] algorithms = {"Genetic Algorithm (GA)", "Tabu Search"};
+        JComboBox<String> algoDropdown = new JComboBox<>(algorithms);
+        panel.add(algoDropdown);
+
+        // Row 4: File Selection & Clear Button
         JPanel fileButtonsPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
         JButton browseButton = new JButton("Load File");
         JButton clearButton = new JButton("Clear File");
@@ -78,7 +85,7 @@ public class MRAGui extends JFrame {
             }
         });
 
-        // --- NEW: Cancel File Read ---
+        // Cancel File Read
         clearButton.addActionListener(e -> {
             selectedFilePath = "RANDOM";
             fileLabel.setText("Mode: Random Generation");
@@ -91,7 +98,7 @@ public class MRAGui extends JFrame {
         panel.add(fileButtonsPanel);
         panel.add(fileLabel);
 
-        // Row 4: Start
+        // Row 5: Start
         JButton startButton = new JButton("Initialize Fleet & Start");
         panel.add(new JLabel(""));
         panel.add(startButton);
@@ -107,8 +114,10 @@ public class MRAGui extends JFrame {
                     calculatedDemand = numCustomers;
                 }
 
-                // Pass the total calculated demand to the MRA
-                myAgent.startSystem(numCustomers, numAgents, selectedFilePath, calculatedDemand);
+                String selectedAlgo = (String) algoDropdown.getSelectedItem();
+
+                // Pass the new selected algorithm to the MRA
+                myAgent.startSystem(numCustomers, numAgents, selectedFilePath, calculatedDemand, selectedAlgo);
                 dispose();
             } catch (Exception ex) {
                 JOptionPane.showMessageDialog(this, "Please enter valid numbers.", "Input Error", JOptionPane.ERROR_MESSAGE);

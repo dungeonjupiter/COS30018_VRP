@@ -197,6 +197,7 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
         route_indices.append(str(cust_idx + 1))
         current_load += loc[2]
 
+    # Handle final used vehicle path
     path_x.append(WAREHOUSE[0])
     path_y.append(WAREHOUSE[1])
     route_indices.append("0")
@@ -209,8 +210,16 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
     )
     output_parts.append(f"{agent_name}:{','.join(route_indices)}")
 
+    for i in range(v_idx + 1, len(agent_names)):
+        standby_agent = agent_names[i]
+        standby_cap = capacities[i]
+        standby_color = colors[i % len(colors)]
+
+        plt.plot([], [], color=standby_color, linewidth=2, linestyle=':', label=f"{standby_agent} (Standby Cap: {standby_cap})")
+        output_parts.append(f"{standby_agent}:0")
+
     total_distance = TabuVRP(locations, capacities, agent_names).calculate_cost(best_sequence)
-    plt.title(f"MRA Optimized Delivery Plan\nTotal Logistics Distance: {total_distance:.2f}")
+    plt.title(f"MRA Optimized Delivery Plan (Tabu)\nTotal Logistics Distance: {total_distance:.2f}")
     plt.legend(loc="upper left", bbox_to_anchor=(1, 1))
     plt.grid(True, linestyle=":", alpha=0.6)
     plt.tight_layout()

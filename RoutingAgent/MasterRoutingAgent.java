@@ -36,6 +36,7 @@ public class MasterRoutingAgent extends Agent {
     private int targetCustomerCount = 20;
     private int totalSystemDemand = 20;
     private String dataFile = "RANDOM";
+    private String selectedAlgorithm = "Genetic Algorithm (GA)";
 
     private boolean calculationTriggered = false;
     private boolean routesSent = false;
@@ -93,13 +94,14 @@ public class MasterRoutingAgent extends Agent {
     }
 
     // Called by the MRAGui when "Start" is clicked
-    public void startSystem(int numCustomers, int numAgents, String filePath, int demand) {
+    public void startSystem(int numCustomers, int numAgents, String filePath, int demand, String algorithm) {
         this.targetCustomerCount = numCustomers;
         this.expectedAgents = numAgents;
         this.dataFile = filePath;
         this.totalSystemDemand = demand;
+        this.selectedAlgorithm = algorithm;
 
-        System.out.println("MRA: Configuration set. " + numCustomers + " customers, " + numAgents + " agents. Required Fleet Capacity: " + demand);
+        System.out.println("MRA: Configuration set. Spawning Delivery Agents... (Algorithm: " + algorithm + ")");
 
         ContainerController container = getContainerController();
         for (int i = 1; i <= numAgents; i++) {
@@ -112,6 +114,10 @@ public class MasterRoutingAgent extends Agent {
                 e.printStackTrace();
             }
         }
+
+        System.out.println("\n=======================================================");
+        System.out.println(">>> DAs SPAWNED! You may now enter DA capacities. <<<");
+        System.out.println("=======================================================\n");
     }
 
     private void registerService() {
@@ -144,28 +150,28 @@ public class MasterRoutingAgent extends Agent {
 
                         int totalCapacity = capacities.values().stream().mapToInt(Integer::intValue).sum();
 
-                        // SMART CHECK: Compare against true demand, not just node count
                         if (totalCapacity < totalSystemDemand) {
                             System.out.println("\n*** MRA INTELLIGENCE TRIGGERED ***");
                             System.out.println("WARNING: Insufficient fleet capacity (" + totalCapacity + " units available vs " + totalSystemDemand + " units demanded).");
-                            System.out.println("ACTION: Spawning Emergency Backup Agent...");
+
+                            int capacityDeficit = totalSystemDemand - totalCapacity;
+                            System.out.println("ACTION: Spawning Automated Emergency Backup Agent to handle " + capacityDeficit + " units...");
 
                             expectedAgents++; // Tell the MRA to wait for one more agent
                             String backupName = "DA_Backup_" + backupAgentCounter++;
 
                             try {
                                 ContainerController container = getContainerController();
-                                AgentController backup = container.createNewAgent(backupName, "RoutingAgent.RoutingAgent.DeliveryAgent", null);
+                                Object[] backupArgs = new Object[] { capacityDeficit };
+                                AgentController backup = container.createNewAgent(backupName, "RoutingAgent.RoutingAgent.DeliveryAgent", backupArgs);
                                 backup.start();
-                                // The MRA will now naturally wait for this new agent to report its capacity
                             } catch (Exception e) {
                                 System.err.println("Failed to spawn backup agent.");
                                 e.printStackTrace();
                             }
                         } else {
-                            // Capacity is mathematically sufficient, proceed to Algorithm
                             calculationTriggered = true;
-                            System.out.println("MRA: Fleet capacity sufficient (" + totalCapacity + "/" + totalSystemDemand + "). Starting GA in 1s...");
+                            System.out.println("MRA: Fleet capacity sufficient (" + totalCapacity + "/" + totalSystemDemand + "). Starting solver in 1s...");
                             addBehaviour(new WakerBehaviour(this, 1000) {
                                 protected void onWake() {
                                     if (!routesSent) {
@@ -199,13 +205,15 @@ public class MasterRoutingAgent extends Agent {
 
     private void calculateOptimalRoutes() {
         try {
-            System.out.println("MRA: Invoking Genetic Algorithm solver...");
+            System.out.println("MRA: Invoking " + selectedAlgorithm + " solver...");
+
+            // Dynamically select the target script based on the GUI string
+            String scriptName = selectedAlgorithm.equals("Tabu Search") ? "Tabu.py" : "GA.py";
 
             String namesArg = String.join(",", agentNames);
             String capsArg = capacities.values().toString().replaceAll("[\\[\\] ]", "");
 
-            // Pass the targetCustomerCount and dataFile path as the 3rd and 4th arguments to Python
-            ProcessBuilder pb = new ProcessBuilder("python", "GA.py", namesArg, capsArg, String.valueOf(targetCustomerCount), dataFile);
+            ProcessBuilder pb = new ProcessBuilder("python", scriptName, namesArg, capsArg, String.valueOf(targetCustomerCount), dataFile);
             pb.redirectErrorStream(true);
             Process p = pb.start();
 
@@ -214,20 +222,17 @@ public class MasterRoutingAgent extends Agent {
             String line;
 
             while ((line = in.readLine()) != null) {
-                // Java looks for the secret prefix
                 if (line.startsWith("FINAL_ROUTES:")) {
-                    result = line.substring(13); // Cuts off the prefix, leaving just the route data
-                    break; // Stops reading and moves on to sending the messages
+                    result = line.substring(13);
+                    break;
                 }
-
-                // If it's not the route, print it normally (this handles your Generation logs)
                 System.out.println("Python: " + line);
             }
 
             if (result != null && !result.isEmpty()) {
-                parseAndSendRoutes(result); // This is what triggers your DA movement logs!
+                parseAndSendRoutes(result);
             } else {
-                System.out.println("MRA: GA returned invalid result.");
+                System.out.println("MRA: " + selectedAlgorithm + " returned invalid result.");
             }
         } catch (IOException e) {
             e.printStackTrace();

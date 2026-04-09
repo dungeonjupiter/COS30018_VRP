@@ -133,10 +133,10 @@ Set the JADE MRA GUI fields as shown under **Config** for each map.
 | C11 | 85 | 75 | 1 |
 | C12 | 75 | 55 | 1 |
 
-### Ground Truth Best Path — Total: `292.94`
+### Ground Truth Best Path — Total: `281.91`
 
-- **DA1** (cap=6, load=6/6): Depot → C12 → C7 → C9 → C11 → C8 → C10 → Depot `dist=138.91`
-- **DA2** (cap=6, load=6/6): Depot → C6 → C4 → C1 → C3 → C5 → C2 → Depot `dist=154.03`
+- **DA1** (cap=6, load=6/6): Depot → C7 → C10 → C8 → C11 → C9 → C12 → Depot `dist=127.88`
+- **DA2** (cap=6, load=6/6): Depot → C2 → C5 → C3 → C1 → C4 → C6 → Depot `dist=154.03`
 
 ---
 

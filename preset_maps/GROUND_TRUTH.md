@@ -305,37 +305,37 @@ Set the JADE MRA GUI fields as shown under **Config** for each map.
 
 ## map10_unequal_demand
 
-**Scenario:** WEIRD · 3 DAs · 10 customers · demand 1–3 (total=20)  
-**Description:** Customers carry demands of 1, 2, or 3; each DA capacity is 7. Total demand (20) nearly fills all three vehicles. Pure customer-count splits will fail — the algorithm must bin-pack demands correctly.
+**Scenario:** WEIRD · 3 DAs · 10 customers · demand 1
+**Description:**  This map is designed to test the algorithm's spatial efficiency and load distribution when faced with a massive capacity surplus. The fleet can carry up to 21 units, while the total map demand is only 10.
 
 ### Config (JADE MRA GUI)
-| Field | Value |
-|---|---|
-| Num Customers | `10` |
-| Num DAs | `3` |
-| DA Capacities | `DA1=7, DA2=7, DA3=7` |
+| Field | Value                                  |
+|---|----------------------------------------|
+| Num Customers | `10`                                   |
+| Num DAs | `3`                                    |
+| DA Capacities | `DA1=7, DA2=7, DA3=7`                  |
 | File Path | `preset_maps/map10_unequal_demand.txt` |
-| Total System Demand | `20` |
+| Total System Demand | `10`                                   |
 
 ### Customer Nodes
 | # | X | Y | Demand |
-|---|---|---|---|
-| C1 | 10 | 10 | 3 |
-| C2 | 30 | 20 | 2 |
-| C3 | 20 | 40 | 1 |
-| C4 | 70 | 30 | 2 |
-| C5 | 80 | 60 | 3 |
-| C6 | 60 | 80 | 1 |
-| C7 | 30 | 70 | 2 |
-| C8 | 50 | 20 | 1 |
-| C9 | 40 | 60 | 2 |
-| C10 | 90 | 90 | 3 |
+|---|---|---|--------|
+| C1 | 10 | 10 | 1      |
+| C2 | 30 | 20 | 1      |
+| C3 | 20 | 40 | 1      |
+| C4 | 70 | 30 | 1      |
+| C5 | 80 | 60 | 1      |
+| C6 | 60 | 80 | 1      |
+| C7 | 30 | 70 | 1      |
+| C8 | 50 | 20 | 1      |
+| C9 | 40 | 60 | 1      |
+| C10 | 90 | 90 | 1      |
 
 ### Ground Truth Best Path — Total: `375.23`
 
-- **DA1** (cap=7, load=7/7): Depot → C3 → C1 → C2 → C8 → Depot `dist=135.61`
-- **DA2** (cap=7, load=6/7): Depot → C4 → C7 → C9 → Depot `dist=113.14`
-- **DA3** (cap=7, load=7/7): Depot → C5 → C10 → C6 → Depot `dist=126.49`
+- **DA1** (cap=7, load=4/7): Depot → C3 → C1 → C2 → C8 → Depot `dist=135.61`
+- **DA2** (cap=7, load=3/7): Depot → C4 → C7 → C9 → Depot `dist=113.14`
+- **DA3** (cap=7, load=3/7): Depot → C5 → C10 → C6 → Depot `dist=126.49`
 
 ---
 

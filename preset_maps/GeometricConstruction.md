@@ -2,8 +2,6 @@
 
 > **What this proves:** Each map was deliberately designed with geometric properties that make the optimal solution logically provable. The geometric argument explains why no other assignment or route ordering can achieve a lower total distance.
 
-> **All 10 maps** are covered. Map 10's demand was updated to all=1, making capacity non-binding and enabling a pure geographic argument.
-
 > **Depot:** (50, 50) | **Formula:** √((x₂−x₁)² + (y₂−y₁)²)
 
 ---

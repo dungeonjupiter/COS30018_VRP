@@ -11,14 +11,11 @@ import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
 import java.awt.Point;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Coordinates delivery agents: FREEZE fleet, merge STATUS into a {@link RouteState},
- * runs greedy + ALNS on distance, then dispatches per-agent ROUTE proposals.
- */
 public class MasterRoutingAgent extends Agent {
 
     public static final String CID_FREEZE = "vrp-freeze";
@@ -27,6 +24,8 @@ public class MasterRoutingAgent extends Agent {
     private static final String PREFIX_STATUS = "STATUS:";
     private static final String PREFIX_ROUTE = "ROUTE:";
 
+    private MRAGui myGui;
+    private MapTrackerGui trackerGui;
     private final GreedyEngine greedyEngine = new GreedyEngine();
     private final ALNSEngine alnsEngine = new ALNSEngine();
     private final List<AID> fleet = new ArrayList<>();
@@ -34,31 +33,185 @@ public class MasterRoutingAgent extends Agent {
     private long freezeTimeoutMs = 8000L;
     private long alnsTimeMs = 1500L;
 
+    // --- NEW: Capacity & Tracking Variables ---
+    private int expectedInitialAgents = 0;
+    private int capacityReportedCount = 0;
+    private int totalSystemDemand = 0;
+    private List<Parcel> pendingInitialParcels = new ArrayList<>();
+    private Map<String, Integer> fleetCapacities = new HashMap<>();
+    public final Map<Point, Parcel> parcelDirectory = new HashMap<>(); // Maps coordinates to IDs and Demands
+    private int backupCounter = 1;
+
+    // --- FLIGHT RECORDER MEMORY ---
+    private final Map<String, List<Point>> initialPlannedRoutes = new HashMap<>();
+    private final Map<String, List<Point>> actualDrivenRoutes = new HashMap<>();
+
+    // --- AUTONOMOUS SUMMARY TRACKING ---
+    private final java.util.Set<String> activeDrivingAgents = new java.util.HashSet<>();
+    private boolean summaryHasBeenShown = false;
+
     @Override
     protected void setup() {
-        Object[] args = getArguments();
-        if (args != null && args.length >= 1 && args[0] instanceof String) {
-            for (String name : ((String) args[0]).split(",")) {
-                String n = name.trim();
-                if (!n.isEmpty()) fleet.add(new AID(n, AID.ISLOCALNAME));
+        System.out.println("MRA online. Depot (" + depot.x + "," + depot.y + ").");
+
+        myGui = new MRAGui(this);
+        myGui.display();
+
+        trackerGui = new MapTrackerGui();
+
+        // Listen for Capacity inputs from DeliveryAgent GUIs
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate mt = MessageTemplate.MatchConversationId("vrp-capacity");
+                ACLMessage msg = receive(mt);
+                if (msg != null) {
+                    String content = msg.getContent();
+                    if (content != null && content.startsWith("CAPACITY:")) {
+                        int cap = Integer.parseInt(content.substring(9).trim());
+                        fleetCapacities.put(msg.getSender().getLocalName(), cap);
+                        capacityReportedCount++;
+
+                        System.out.println("MRA: Received capacity " + cap + " from " + msg.getSender().getLocalName() + " (" + capacityReportedCount + "/" + expectedInitialAgents + ")");
+
+                        if (capacityReportedCount == expectedInitialAgents) {
+                            checkCapacitiesAndRunSolver();
+                        }
+                    }
+                } else { block(); }
             }
-        }
-        if (args != null && args.length >= 2 && args[1] instanceof String) {
-            String[] d = ((String) args[1]).split(",");
-            if (d.length >= 2) {
-                depot.x = Integer.parseInt(d[0].trim());
-                depot.y = Integer.parseInt(d[1].trim());
+        });
+
+        // Listen for GPS Pings
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-tracking");
+                ACLMessage msg = receive(tpl);
+                if (msg != null) {
+                    processGpsPing(msg.getSender().getLocalName(), msg.getContent());
+                } else { block(); }
             }
-        }
-        if (fleet.isEmpty()) {
-            fleet.add(new AID("DA1", AID.ISLOCALNAME));
-            fleet.add(new AID("DA2", AID.ISLOCALNAME));
-        }
-        System.out.println("MRA online. Depot (" + depot.x + "," + depot.y + ") fleet=" + fleet.size() + ".");
+        });
+        // --- Listen for 'End of Shift' Pings ---
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-done");
+                ACLMessage msg = receive(tpl);
+                if (msg != null) {
+                    activeDrivingAgents.remove(msg.getSender().getLocalName());
+
+                    // If everyone is done driving, pop up the summary!
+                    if (activeDrivingAgents.isEmpty() && !summaryHasBeenShown) {
+                        System.out.println("\n*** MRA: ALL AGENTS HAVE RETURNED TO DEPOT! Launching End-of-Day Summary! ***");
+                        summaryHasBeenShown = true;
+                        RouteSummaryGui summaryGui = new RouteSummaryGui(initialPlannedRoutes, actualDrivenRoutes);
+                        summaryGui.display();
+                    }
+                } else {
+                    block();
+                }
+            }
+        });
     }
 
-    /** GUI or another agent can trigger dynamic replanning. */
+    public void spawnInitialAgent(String name, int startX, int startY) {
+        try {
+            Object[] args = new Object[]{startX + "," + startY}; // NO CAPACITY PASSED -> TRIGGERS GUI
+            jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
+            ac.start();
+            fleet.add(new AID(name, AID.ISLOCALNAME));
+        } catch (Exception e) { e.printStackTrace(); }
+    }
+
+    public void initializeSystem(final int numCustomers, final int numAgents, final String filePath) {
+        System.out.println("\n--- MRA: PHASE 1A - GENERATING MAP & SPAWNING AGENTS ---");
+        pendingInitialParcels.clear();
+        fleetCapacities.clear();
+        parcelDirectory.clear();
+        capacityReportedCount = 0;
+        totalSystemDemand = 0;
+        expectedInitialAgents = numAgents;
+
+        if (filePath.equals("RANDOM")) {
+            java.util.Random rand = new java.util.Random();
+            for (int i = 1; i <= numCustomers; i++) {
+                Parcel p = new Parcel("P" + i, rand.nextInt(100), rand.nextInt(100), 1);
+                pendingInitialParcels.add(p);
+                parcelDirectory.put(p.getDestination(), p);
+                totalSystemDemand += p.getDemand();
+            }
+        } else {
+            try {
+                java.util.List<String> lines = java.nio.file.Files.readAllLines(new java.io.File(filePath).toPath());
+                int pCount = 1;
+                for (String line : lines) {
+                    if (line.trim().isEmpty()) continue;
+                    String[] parts = line.split(",");
+                    if (parts.length >= 2) {
+                        int demand = parts.length >= 3 ? Integer.parseInt(parts[2].trim()) : 1;
+                        Parcel p = new Parcel("F" + pCount++, Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()), demand);
+                        pendingInitialParcels.add(p);
+                        parcelDirectory.put(p.getDestination(), p);
+                        totalSystemDemand += p.getDemand();
+                    }
+                }
+            } catch (Exception e) { System.err.println("MRA: Failed to parse file."); }
+        }
+
+        System.out.println("MRA: Total System Demand calculated at: " + totalSystemDemand + " units.");
+        for (int i = 1; i <= numAgents; i++) spawnInitialAgent("DA" + i, depot.x, depot.y);
+    }
+
+    private void checkCapacitiesAndRunSolver() {
+        int totalCap = 0;
+        for (int cap : fleetCapacities.values()) totalCap += cap;
+
+        if (totalCap < totalSystemDemand) {
+            System.out.println("\n*** MRA INTELLIGENCE TRIGGERED ***");
+            System.out.println("WARNING: Insufficient fleet capacity (" + totalCap + " units vs " + totalSystemDemand + " demanded).");
+            System.out.println("ACTION: Spawning Automated Emergency Backup Agent...");
+
+            expectedInitialAgents++; // Tell MRA to wait for another GUI input loop!
+            spawnInitialAgent("DA_Backup_" + backupCounter++, depot.x, depot.y);
+        } else {
+            System.out.println("\nMRA: Fleet capacity sufficient (" + totalCap + "/" + totalSystemDemand + "). Proceeding to calculate initial routes...");
+            runInitialOptimizationPipeline();
+        }
+    }
+
+    private void runInitialOptimizationPipeline() {
+        addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
+            @Override
+            public void action() {
+                RouteState baseState = new RouteState();
+                for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
+
+                for (Parcel p : pendingInitialParcels) {
+                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory);
+                }
+
+                System.out.println("MRA: Running ALNS engine...");
+                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory);
+
+                // --- RECORD PHASE 1 PLANNED ROUTES ---
+                initialPlannedRoutes.clear();
+                for (Map.Entry<String, List<Point>> entry : optimizedState.getRoutes().entrySet()) {
+                    initialPlannedRoutes.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+                }
+
+                dispatch(optimizedState, new HashMap<>());
+
+                myGui.unlockPhase2();
+                if (trackerGui != null) trackerGui.display();
+            }
+        });
+    }
+
     public void injectDynamicParcel(Parcel newParcel) {
+        if (fleet.isEmpty()) return;
+        parcelDirectory.put(newParcel.getDestination(), newParcel);
         addBehaviour(new FreezeOptimizeDispatchBehaviour(newParcel));
     }
 
@@ -69,9 +222,7 @@ public class MasterRoutingAgent extends Agent {
         private long waitUntil = 0L;
         private RouteState optimized;
 
-        FreezeOptimizeDispatchBehaviour(Parcel parcel) {
-            this.parcel = parcel;
-        }
+        FreezeOptimizeDispatchBehaviour(Parcel parcel) { this.parcel = parcel; }
 
         @Override
         public void action() {
@@ -79,15 +230,12 @@ public class MasterRoutingAgent extends Agent {
                 case 0 -> sendFreeze();
                 case 1 -> collectReplies();
                 case 2 -> runSolversAndDispatch();
-                default -> { /* done */ }
             }
         }
 
         private void sendFreeze() {
-            System.out.println("\nMRA: FREEZE for parcel " + parcel.getId() + " (" + fleet.size() + " agents).");
             pending.clear();
             for (AID aid : fleet) pending.put(aid.getLocalName(), null);
-
             ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
             m.setContent(FREEZE_CONTENT);
             m.setConversationId(CID_FREEZE);
@@ -98,84 +246,100 @@ public class MasterRoutingAgent extends Agent {
         }
 
         private void collectReplies() {
-            MessageTemplate tpl = MessageTemplate.and(
-                    MessageTemplate.MatchPerformative(ACLMessage.INFORM),
-                    MessageTemplate.MatchConversationId(CID_FREEZE));
+            MessageTemplate tpl = MessageTemplate.and(MessageTemplate.MatchPerformative(ACLMessage.INFORM), MessageTemplate.MatchConversationId(CID_FREEZE));
             ACLMessage msg;
             while ((msg = receive(tpl)) != null) {
-                if (msg.getSender() == null) continue;
                 String name = msg.getSender().getLocalName();
-                if (!pending.containsKey(name)) continue;
-                String c = msg.getContent();
-                if (c != null && c.startsWith(PREFIX_STATUS)) {
-                    try {
-                        pending.put(name, parseStatus(c));
-                    } catch (Exception ex) {
-                        System.err.println("MRA: bad STATUS from " + name + ": " + c);
-                    }
+                if (pending.containsKey(name)) {
+                    AgentStatus status = parseStatus(msg.getContent());
+                    pending.put(name, status);
+                    fleetCapacities.put(name, status.maxCapacity); // Update active capacities
                 }
             }
-            boolean all = pending.values().stream().allMatch(s -> s != null);
-            if (all || System.currentTimeMillis() > waitUntil) {
-                if (!all) {
-                    System.err.println("MRA: freeze timeout; missing "
-                            + pending.entrySet().stream().filter(e -> e.getValue() == null).count() + " replies.");
-                }
-                phase = 2;
-            } else {
-                block();
-            }
+            if (pending.values().stream().allMatch(s -> s != null) || System.currentTimeMillis() > waitUntil) phase = 2;
+            else block();
         }
 
         private void runSolversAndDispatch() {
             RouteState state = mergeFleetState(pending);
-            System.out.println("MRA: pre-insert distance=" + state.getTotalDistance());
-            RouteState greedy = greedyEngine.insertNewParcel(parcel, state);
-            System.out.println("MRA: post-greedy distance=" + greedy.getTotalDistance());
-            optimized = alnsEngine.optimize(greedy, alnsTimeMs);
-            System.out.println("MRA: post-ALNS distance=" + optimized.getTotalDistance());
+            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory);
+            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory);
             dispatch(optimized, pending);
             phase = 3;
         }
+        @Override public boolean done() { return phase >= 3; }
+    }
 
-        @Override
-        public boolean done() {
-            return phase >= 3;
+    private void dispatch(RouteState state, Map<String, AgentStatus> lastKnown) {
+        for (AID aid : fleet) {
+            String name = aid.getLocalName();
+            activeDrivingAgents.add(name);
+            List<Point> pts = state.getRoutes().get(name);
+            if (pts == null || pts.size() < 2) continue;
+
+            List<Point> stops = new ArrayList<>(pts);
+
+            // --- NEW REQUIREMENT: Force route to end at Warehouse ---
+            if (!stops.isEmpty() && !stops.get(stops.size() - 1).equals(depot)) {
+                stops.add(new Point(depot));
+            }
+
+            // Remove consecutive duplicates (e.g., if GreedyEngine stacked two Depot visits back-to-back)
+            for (int i = stops.size() - 1; i > 0; i--) {
+                if (stops.get(i).equals(stops.get(i - 1))) {
+                    stops.remove(i);
+                }
+            }
+
+            StringBuilder coords = new StringBuilder();
+            StringBuilder routeLog = new StringBuilder();
+
+            for (int i = 1; i < stops.size(); i++) {
+                Point p = stops.get(i);
+                if (i > 1) coords.append(',');
+                coords.append(p.x).append(':').append(p.y);
+
+                // Format the Console Log for easy reading
+                if (p.equals(depot)) {
+                    routeLog.append("Warehouse(Pickup/Return) ");
+                } else {
+                    Parcel parcel = parcelDirectory.get(p);
+                    routeLog.append(parcel != null ? parcel.getId() : ("Unk(" + p.x + ")")).append(" ");
+                }
+            }
+
+            AgentStatus prev = lastKnown.get(name);
+            int free = prev != null ? prev.freeCapacity : fleetCapacities.getOrDefault(name, 5);
+            int max = prev != null ? prev.maxCapacity : fleetCapacities.getOrDefault(name, 5);
+
+            String payload = PREFIX_ROUTE + free + ":" + max + "|" + coords;
+
+            ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
+            m.addReceiver(aid);
+            m.setConversationId(CID_ROUTE);
+            m.setContent(payload);
+            send(m);
+
+            System.out.println("MRA -> " + name + " Route Assigned: [ " + routeLog.toString().trim() + " ]");
         }
     }
 
+    // --- Helpers (Status Parsing and GPS) ---
     private static class AgentStatus {
-        final Point location;
-        final int freeCapacity;
-        final int maxCapacity;
-        final List<Point> tailStops;
-
-        AgentStatus(Point location, int freeCapacity, int maxCapacity, List<Point> tailStops) {
-            this.location = location;
-            this.freeCapacity = freeCapacity;
-            this.maxCapacity = maxCapacity;
-            this.tailStops = tailStops;
-        }
+        final Point location; final int freeCapacity; final int maxCapacity; final List<Point> tailStops;
+        AgentStatus(Point loc, int free, int max, List<Point> tail) { location = loc; freeCapacity = free; maxCapacity = max; tailStops = tail; }
     }
 
-    /** {@code STATUS:x:y:free:max:x1:y1,x2:y2,...} */
     private static AgentStatus parseStatus(String content) {
         String rest = content.substring(PREFIX_STATUS.length());
         String[] headTail = rest.split(":", 5);
-        if (headTail.length < 4) throw new IllegalArgumentException("STATUS head");
-        int x = Integer.parseInt(headTail[0].trim());
-        int y = Integer.parseInt(headTail[1].trim());
-        int free = Integer.parseInt(headTail[2].trim());
-        int max = Integer.parseInt(headTail[3].trim());
+        int x = Integer.parseInt(headTail[0].trim()), y = Integer.parseInt(headTail[1].trim());
+        int free = Integer.parseInt(headTail[2].trim()), max = Integer.parseInt(headTail[3].trim());
         List<Point> stops = new ArrayList<>();
         if (headTail.length == 5 && !headTail[4].isBlank()) {
             for (String token : headTail[4].split(",")) {
-                String t = token.trim();
-                if (t.isEmpty()) continue;
-                String[] xy = t.split(":");
-                if (xy.length >= 2) {
-                    stops.add(new Point(Integer.parseInt(xy[0].trim()), Integer.parseInt(xy[1].trim())));
-                }
+                String[] xy = token.split(":");
+                stops.add(new Point(Integer.parseInt(xy[0].trim()), Integer.parseInt(xy[1].trim())));
             }
         }
         return new AgentStatus(new Point(x, y), free, max, stops);
@@ -186,56 +350,62 @@ public class MasterRoutingAgent extends Agent {
         for (AID aid : fleet) {
             String name = aid.getLocalName();
             AgentStatus st = byName.get(name);
-            Point start = st != null ? st.location : new Point(depot);
-            state.addAgent(name, start);
-            List<Point> route = state.getRoutes().get(name);
-            if (st != null) {
-                for (Point p : st.tailStops) {
-                    state.insertNode(name, route.size(), new Point(p));
-                }
-            }
+            state.addAgent(name, st != null ? st.location : new Point(depot));
+            if (st != null) for (Point p : st.tailStops) state.insertNode(name, state.getRoutes().get(name).size(), new Point(p));
         }
         return state;
     }
 
-    private void dispatch(RouteState state, Map<String, AgentStatus> lastKnown) {
-        for (AID aid : fleet) {
-            String name = aid.getLocalName();
-            List<Point> pts = state.getRoutes().get(name);
-            if (pts == null || pts.size() < 2) {
-                ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
-                m.addReceiver(aid);
-                m.setConversationId(CID_ROUTE);
-                m.setContent(PREFIX_ROUTE);
-                send(m);
-                continue;
-            }
-            List<Point> stops = new ArrayList<>(pts);
-            Point first = stops.get(0);
-            while (stops.size() > 1 && stops.get(1).equals(first)) {
-                stops.remove(1);
-            }
-            StringBuilder coords = new StringBuilder();
-            for (int i = 1; i < stops.size(); i++) {
-                Point p = stops.get(i);
-                if (i > 1) coords.append(',');
-                coords.append(p.x).append(':').append(p.y);
-            }
-            AgentStatus prev = lastKnown.get(name);
-            int free = prev != null ? prev.freeCapacity : 0;
-            int max = prev != null ? prev.maxCapacity : 0;
-            if (prev == null) {
-                max = 5;
-                free = 5;
-            }
-            String payload = PREFIX_ROUTE + free + ":" + max + "|" + coords;
+    private void processGpsPing(String agentName, String content) {
+        if (trackerGui == null || !trackerGui.isVisible()) return;
+        try {
+            String[] parts = content.split("\\|");
+            String[] locCoords = parts[0].split(",");
+            Point currentLoc = new Point(Integer.parseInt(locCoords[0]), Integer.parseInt(locCoords[1]));
 
-            ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
-            m.addReceiver(aid);
-            m.setConversationId(CID_ROUTE);
-            m.setContent(payload);
-            send(m);
-            System.out.println("MRA -> " + name + ": " + payload);
+            // --- RECORD PHYSICAL BREADCRUMB TRAIL ---
+            List<Point> history = actualDrivenRoutes.computeIfAbsent(agentName, k -> new ArrayList<>());
+            // Only add the point if the agent actually moved (saves memory)
+            if (history.isEmpty() || !history.get(history.size() - 1).equals(currentLoc)) {
+                history.add(currentLoc);
+            }
+
+            List<Point> remainingStops = new ArrayList<>();
+            if (parts.length > 1 && !parts[1].isBlank()) {
+                for (String stop : parts[1].split(";")) {
+                    String[] sCoords = stop.split(",");
+                    remainingStops.add(new Point(Integer.parseInt(sCoords[0]), Integer.parseInt(sCoords[1])));
+                }
+            }
+            trackerGui.updateAgent(agentName, currentLoc, remainingStops);
+        } catch (Exception e) {}
+    }
+
+    // ==========================================
+    // PHASE 2: DYNAMIC MID-ROUTE SPAWNING
+    // ==========================================
+    // Called by the Phase 2 GUI to deploy an agent mid-simulation
+    public void spawnDynamicAgent(String name, int startX, int startY, int capacity) {
+        try {
+            // Passing X, Y, and Capacity so it instantly joins the fleet mid-route
+            Object[] args = new Object[]{startX + "," + startY + "," + capacity};
+
+            jade.wrapper.AgentController ac = getContainerController().createNewAgent(
+                    name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
+            ac.start();
+
+            // Add to the tracking lists so ALNS can use it on the next calculation!
+            fleet.add(new AID(name, AID.ISLOCALNAME));
+            fleetCapacities.put(name, capacity);
+
+            System.out.println("\n*** MRA: Dynamically added standby agent " + name + " to the active fleet with capacity " + capacity + "! ***");
+        } catch (Exception e) {
+            System.err.println("Failed to spawn dynamic agent: " + name);
+            e.printStackTrace();
         }
     }
+
+    public Map<String, List<Point>> getInitialPlannedRoutes() { return initialPlannedRoutes; }
+    public Map<String, List<Point>> getActualDrivenRoutes() { return actualDrivenRoutes; }
+
 }

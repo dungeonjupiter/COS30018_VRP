@@ -9,13 +9,12 @@ import java.util.Map;
 import java.util.Random;
 
 public class RouteState {
-    // Maps Agent Name -> Their current list of planned stops
     private Map<String, List<Point>> routes = new HashMap<>();
     private Random random = new Random();
+    private Point depot = new Point(50, 50);
 
     public RouteState() {}
 
-    // Clone method is CRITICAL for algorithms so they don't overwrite each other
     public RouteState cloneState() {
         RouteState copy = new RouteState();
         for (Map.Entry<String, List<Point>> entry : this.routes.entrySet()) {
@@ -48,7 +47,12 @@ public class RouteState {
 
     // --- ALNS Destroy Methods ---
     public void randomRemoval(int count, List<Point> unassigned) {
-        for (int i = 0; i < count; i++) {
+        int attempts = 0;
+        int removed = 0;
+
+        // Loop until we remove the required number of actual parcels
+        while (removed < count && attempts < 50) {
+            attempts++;
             List<String> keys = new ArrayList<>(routes.keySet());
             String randomAgent = keys.get(random.nextInt(keys.size()));
             List<Point> route = routes.get(randomAgent);
@@ -56,7 +60,14 @@ public class RouteState {
             // Don't remove their starting position (index 0)
             if (route.size() > 1) {
                 int removeIdx = 1 + random.nextInt(route.size() - 1);
-                unassigned.add(route.remove(removeIdx));
+                Point p = route.remove(removeIdx);
+
+                // Only add actual parcels to the unassigned pool.
+                // If ALNS ripped out a warehouse detour, just let it vanish!
+                if (!p.equals(depot)) {
+                    unassigned.add(p);
+                    removed++;
+                }
             }
         }
     }

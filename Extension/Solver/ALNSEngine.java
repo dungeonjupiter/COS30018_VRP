@@ -4,10 +4,11 @@ import RoutingAgent.Extension.RoutingAgent.*;
 import java.awt.Point;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 public class ALNSEngine {
 
-    public RouteState optimize(RouteState startState, long timeLimitMs) {
+    public RouteState optimize(RouteState startState, long timeLimitMs, Map<String, Integer> capacities, Map<Point, Parcel> directory) {
         long startTime = System.currentTimeMillis();
         RouteState currentBest = startState.cloneState();
         RouteState workingState = startState.cloneState();
@@ -21,11 +22,12 @@ public class ALNSEngine {
             // 1. Destroy (Rip 2 parcels out randomly)
             workingState.randomRemoval(2, unassigned);
 
-            // 2. Repair (Put them back using Greedy logic)
+            // 2. Repair (Put them back using Greedy logic, respecting capacity)
             GreedyEngine repairEngine = new GreedyEngine();
             for (Point p : unassigned) {
-                // Fake a parcel to reuse our greedy logic
-                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, 1), workingState);
+                Parcel actualParcel = directory.get(p);
+                int demand = actualParcel != null ? actualParcel.getDemand() : 1;
+                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, demand), workingState, capacities, directory);
             }
 
             // 3. Evaluate
@@ -36,7 +38,8 @@ public class ALNSEngine {
             }
         }
 
-        System.out.println("ALNS finished " + iterations + " iterations. Best distance: " + currentBest.getTotalDistance());
+        // --- Output the distance rounded to 2 decimal places ---
+        System.out.printf("ALNS finished %d iterations. Best distance: %.2f\n", iterations, currentBest.getTotalDistance());
         return currentBest;
     }
 }

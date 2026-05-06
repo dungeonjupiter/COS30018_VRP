@@ -20,6 +20,8 @@ public class DeliveryAgent extends Agent {
     public static final String FREEZE_CONTENT = "FREEZE";
     private static final String PREFIX_STATUS = "STATUS:";
     private static final String PREFIX_ROUTE = "ROUTE:";
+    public static final String CID_TRACKING = "vrp-tracking";
+    public static final String CID_DONE = "vrp-done";
 
     private static final int MOVE_STEP = 2;
     private static final long TICK_MS = 400L;
@@ -33,6 +35,8 @@ public class DeliveryAgent extends Agent {
     @Override
     protected void setup() {
         Object[] args = getArguments();
+        boolean hasCapacityArg = false;
+
         if (args != null && args.length >= 1 && args[0] instanceof String) {
             String[] parts = ((String) args[0]).split(",");
             if (parts.length >= 2) {
@@ -42,16 +46,27 @@ public class DeliveryAgent extends Agent {
             if (parts.length >= 3) {
                 maxCapacity = Integer.parseInt(parts[2].trim());
                 freeCapacity = Math.min(freeCapacity, maxCapacity);
+                hasCapacityArg = true; // Capacity was provided automatically!
             }
         }
-        System.out.println(getLocalName() + " online at (" + currentLocation.x + "," + currentLocation.y
-                + ") capacity " + freeCapacity + "/" + maxCapacity + ".");
 
+        System.out.println(getLocalName() + " online at (" + currentLocation.x + "," + currentLocation.y + ").");
+
+        // If no capacity was provided, show GUI. Otherwise, auto-send capacity.
+        if (hasCapacityArg) {
+            updateCapacity(maxCapacity);
+        } else {
+            DeliveryAgentGui gui = new DeliveryAgentGui(this);
+            gui.setVisible(true);
+        }
+
+        // --- EXISTING MESSAGE TEMPLATES & BEHAVIOURS ---
         MessageTemplate freezeTpl = MessageTemplate.and(
                 MessageTemplate.MatchPerformative(ACLMessage.REQUEST),
                 MessageTemplate.and(
                         MessageTemplate.MatchContent(FREEZE_CONTENT),
                         MessageTemplate.MatchConversationId(CID_FREEZE)));
+
         MessageTemplate routeTpl = MessageTemplate.and(
                 MessageTemplate.MatchPerformative(ACLMessage.PROPOSE),
                 MessageTemplate.MatchConversationId(CID_ROUTE));
@@ -60,16 +75,12 @@ public class DeliveryAgent extends Agent {
             @Override
             public void action() {
                 ACLMessage msg = receive(freezeTpl);
-                if (msg != null) {
-                    handleFreeze(msg);
-                    return;
-                }
+                if (msg != null) { handleFreeze(msg); return; }
+
                 msg = receive(routeTpl);
-                if (msg != null) {
-                    handleRoute(msg);
-                    return;
-                }
-                block(MessageTemplate.or(freezeTpl, routeTpl));
+                if (msg != null) { handleRoute(msg); return; }
+
+                block();
             }
         });
     }
@@ -116,6 +127,8 @@ public class DeliveryAgent extends Agent {
         if (!remainingStops.isEmpty()) {
             moveSim = new MovementBehaviour(this, TICK_MS);
             addBehaviour(moveSim);
+        }else {
+            sendDonePing(); // Instantly report finished if told to stay home
         }
     }
 
@@ -164,6 +177,7 @@ public class DeliveryAgent extends Agent {
             if (remainingStops.isEmpty()) {
                 stop();
                 moveSim = null;
+                sendDonePing(); // Report finished when driving is fully complete
                 return;
             }
             Point target = remainingStops.get(0);
@@ -175,6 +189,8 @@ public class DeliveryAgent extends Agent {
                 System.out.println(getLocalName() + ": delivered at (" + target.x + "," + target.y
                         + ") free=" + freeCapacity + "/" + maxCapacity + ".");
             }
+            // Broadcast position to MRA every step
+            sendGpsPing();
         }
 
         private void stepToward(Point target) {
@@ -185,4 +201,43 @@ public class DeliveryAgent extends Agent {
             currentLocation.translate(dx, dy);
         }
     }
+
+    public void updateCapacity(int cap) {
+        this.maxCapacity = cap;
+        this.freeCapacity = cap;
+        System.out.println(getLocalName() + ": Capacity locked in at " + cap);
+
+        // Send capacity to MRA
+        ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+        msg.addReceiver(new jade.core.AID("MRA", jade.core.AID.ISLOCALNAME));
+        msg.setConversationId("vrp-capacity");
+        msg.setContent("CAPACITY:" + cap);
+        send(msg);
+    }
+
+    private void sendGpsPing() {
+        ACLMessage ping = new ACLMessage(ACLMessage.INFORM);
+        ping.addReceiver(new jade.core.AID("MRA", jade.core.AID.ISLOCALNAME));
+        ping.setConversationId(CID_TRACKING);
+
+        // Format: "X,Y|stopX,stopY;stopX,stopY"
+        StringBuilder sb = new StringBuilder();
+        sb.append(currentLocation.x).append(",").append(currentLocation.y).append("|");
+        for (int i = 0; i < remainingStops.size(); i++) {
+            Point p = remainingStops.get(i);
+            sb.append(p.x).append(",").append(p.y);
+            if (i < remainingStops.size() - 1) sb.append(";");
+        }
+
+        ping.setContent(sb.toString());
+        send(ping);
+    }
+
+    private void sendDonePing() {
+        ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
+        msg.addReceiver(new jade.core.AID("MRA", jade.core.AID.ISLOCALNAME));
+        msg.setConversationId(CID_DONE);
+        send(msg);
+    }
+
 }

@@ -2,15 +2,15 @@ package RoutingAgent.Extension.RoutingAgent;
 
 import javax.swing.*;
 import java.awt.*;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 public class RouteSummaryGui extends JFrame {
     private final Map<String, List<Point>> initialRoutes;
     private final Map<String, List<Point>> actualRoutes;
-    private boolean showingInitial = true;
+    private boolean showingInitial = false;
 
-    // The panel must be initialized before any buttons try to use it
     private final SummaryPanel mapPanel;
 
     private final Color[] agentColors = {
@@ -23,22 +23,19 @@ public class RouteSummaryGui extends JFrame {
         this.initialRoutes = initial;
         this.actualRoutes = actual;
 
-        setSize(700, 720);
+        setSize(750, 750);
         setLayout(new BorderLayout());
 
-        // --- 1. INITIALIZE MAP PANEL FIRST ---
-        // We must build the map before the button tries to reference it!
         mapPanel = new SummaryPanel();
         mapPanel.setBackground(new Color(30, 30, 35));
         add(mapPanel, BorderLayout.CENTER);
 
-        // --- 2. TOP CONTROLS ---
         JPanel controlPanel = new JPanel();
         controlPanel.setBackground(new Color(40, 40, 45));
 
-        JToggleButton toggleBtn = new JToggleButton("Currently Viewing: PHASE 1 PLANNED ROUTES");
+        JToggleButton toggleBtn = new JToggleButton("Currently Viewing: ACTUAL DRIVEN ROUTES (Final)");
         toggleBtn.setFont(new Font("SansSerif", Font.BOLD, 14));
-        toggleBtn.setBackground(new Color(0, 123, 255));
+        toggleBtn.setBackground(new Color(40, 167, 69));
         toggleBtn.setForeground(Color.WHITE);
         toggleBtn.setFocusPainted(false);
 
@@ -51,7 +48,7 @@ public class RouteSummaryGui extends JFrame {
                 toggleBtn.setText("Currently Viewing: ACTUAL DRIVEN ROUTES (Final)");
                 toggleBtn.setBackground(new Color(40, 167, 69));
             }
-            mapPanel.repaint(); // Now Java knows mapPanel definitely exists!
+            mapPanel.repaint();
         });
 
         controlPanel.add(toggleBtn);
@@ -71,62 +68,116 @@ public class RouteSummaryGui extends JFrame {
             Graphics2D g2d = (Graphics2D) g;
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            // Draw Grid
+            // 1. Draw Grid
             g2d.setColor(new Color(50, 50, 55));
             for (int i = 0; i <= 100; i += 10) {
                 g2d.drawLine(PADDING, (i * SCALE) + PADDING, (100 * SCALE) + PADDING, (i * SCALE) + PADDING);
                 g2d.drawLine((i * SCALE) + PADDING, PADDING, (i * SCALE) + PADDING, (100 * SCALE) + PADDING);
             }
 
-            // Draw Depot
+            // 2. Draw Depot
             g2d.setColor(Color.WHITE);
             int dX = (depot.x * SCALE) + PADDING, dY = (depot.y * SCALE) + PADDING;
-            g2d.fillRect(dX - 8, dY - 8, 16, 16);
-            g2d.drawString("DEPOT", dX - 18, dY - 12);
+            g2d.fillRect(dX - 10, dY - 10, 20, 20);
+            g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
+            g2d.drawString("WAREHOUSE", dX - 35, dY - 15);
 
-            // Select which dataset to draw based on the toggle button
             Map<String, List<Point>> dataToDraw = showingInitial ? initialRoutes : actualRoutes;
             int colorIndex = 0;
 
             for (Map.Entry<String, List<Point>> entry : dataToDraw.entrySet()) {
                 String name = entry.getKey();
-                List<Point> path = entry.getValue();
-                if (path == null || path.isEmpty()) continue;
+                List<Point> rawPath = entry.getValue();
+                if (rawPath == null || rawPath.isEmpty()) continue;
 
-                g2d.setColor(agentColors[colorIndex % agentColors.length]);
-
-                // Planned routes are dashed. Actual driven paths are solid.
-                if (showingInitial) {
-                    g2d.setStroke(new BasicStroke(2, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0, new float[]{6}, 0));
-                } else {
-                    g2d.setStroke(new BasicStroke(3));
+                // --- THE FIX IS HERE ---
+                // We removed the "!showingInitial" restriction.
+                // Now, if ANY route (Planned or Actual) doesn't end at the Warehouse, the visualizer forcefully bridges the gap!
+                List<Point> path = new ArrayList<>(rawPath);
+                if (!path.get(path.size() - 1).equals(depot)) {
+                    path.add(new Point(depot));
                 }
+
+                Color agentColor = agentColors[colorIndex % agentColors.length];
+                g2d.setColor(agentColor);
+
+                int depotVisits = 0;
+                boolean isDynamicSegment = false;
 
                 int prevX = (path.get(0).x * SCALE) + PADDING;
                 int prevY = (path.get(0).y * SCALE) + PADDING;
 
                 for (int i = 1; i < path.size(); i++) {
-                    int currX = (path.get(i).x * SCALE) + PADDING;
-                    int currY = (path.get(i).y * SCALE) + PADDING;
+                    Point prevNode = path.get(i - 1);
+                    Point currNode = path.get(i);
 
+                    int currX = (currNode.x * SCALE) + PADDING;
+                    int currY = (currNode.y * SCALE) + PADDING;
+
+                    // --- INTELLIGENT STROKE LOGIC ---
+                    if (!showingInitial) {
+                        if (currNode.equals(depot) && !prevNode.equals(depot)) {
+                            depotVisits++;
+                        }
+                        if (depotVisits >= 1 && !currNode.equals(depot)) {
+                            isDynamicSegment = true;
+                        }
+
+                        if (isDynamicSegment) {
+                            g2d.setStroke(new BasicStroke(3, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0, new float[]{8}, 0));
+                        } else {
+                            g2d.setStroke(new BasicStroke(3));
+                        }
+                    } else {
+                        // Planned Phase 1 routes get a clean dashed line
+                        g2d.setStroke(new BasicStroke(2, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0, new float[]{5}, 0));
+                    }
+
+                    // Draw the segment
                     g2d.drawLine(prevX, prevY, currX, currY);
 
-                    // Draw Customer Nodes (Only necessary on Planned routes, as Actual routes trace every physical step)
-                    if (showingInitial && !path.get(i).equals(depot)) {
-                        g2d.fillOval(currX - 4, currY - 4, 8, 8);
+                    // --- DIRECTIONAL ARROW LOGIC ---
+                    boolean drawArrow = false;
+                    if (showingInitial) {
+                        drawArrow = true;
+                    } else {
+                        if (i % 15 == 0 || i == path.size() - 1) {
+                            drawArrow = true;
+                        }
+                    }
+
+                    if (drawArrow && (currX != prevX || currY != prevY)) {
+                        drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
+                    }
+
+                    // Draw circles for planned customer nodes
+                    if (!currNode.equals(depot) && showingInitial) {
+                        g2d.fillOval(currX - 5, currY - 5, 10, 10);
                     }
 
                     prevX = currX;
                     prevY = currY;
                 }
 
-                // Draw Name Tag at the start of the path
+                // Name Tag
                 g2d.setColor(Color.WHITE);
                 g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
                 g2d.drawString(name, (path.get(0).x * SCALE) + PADDING - 10, (path.get(0).y * SCALE) + PADDING - 15);
 
                 colorIndex++;
             }
+        }
+
+        private void drawArrowHead(Graphics2D g2d, int x1, int y1, int x2, int y2, Color color) {
+            double angle = Math.atan2(y2 - y1, x2 - x1);
+            int arrowSize = 12;
+            int x3 = (int) (x2 - arrowSize * Math.cos(angle - Math.PI / 6));
+            int y3 = (int) (y2 - arrowSize * Math.sin(angle - Math.PI / 6));
+            int x4 = (int) (x2 - arrowSize * Math.cos(angle + Math.PI / 6));
+            int y4 = (int) (y2 - arrowSize * Math.sin(angle + Math.PI / 6));
+
+            g2d.setColor(color);
+            g2d.fillPolygon(new int[]{x2, x3, x4}, new int[]{y2, y3, y4}, 3);
         }
     }
 

@@ -5,11 +5,10 @@ import java.awt.Point;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 public class ALNSEngine {
 
-    public RouteState optimize(RouteState startState, long timeLimitMs, Map<String, Integer> capacities, Map<Point, Parcel> directory, Set<Point> inVanParcels) {
+    public RouteState optimize(RouteState startState, long timeLimitMs, Map<String, Integer> capacities, Map<Point, Parcel> directory) {
         long startTime = System.currentTimeMillis();
         RouteState currentBest = startState.cloneState();
         RouteState workingState = startState.cloneState();
@@ -23,12 +22,12 @@ public class ALNSEngine {
             // 1. Destroy
             workingState.randomRemoval(2, unassigned);
 
-            // 2. Repair (Passes the in-van tracking list down!)
+            // 2. Repair
             GreedyEngine repairEngine = new GreedyEngine();
             for (Point p : unassigned) {
                 Parcel actualParcel = directory.get(p);
                 int demand = actualParcel != null ? actualParcel.getDemand() : 1;
-                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, demand), workingState, capacities, directory, inVanParcels);
+                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, demand), workingState, capacities, directory);
             }
 
             // 3. Evaluate

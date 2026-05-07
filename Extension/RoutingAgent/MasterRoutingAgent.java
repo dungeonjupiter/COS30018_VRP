@@ -12,11 +12,11 @@ import jade.lang.acl.MessageTemplate;
 import java.awt.Point;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.HashSet;
 
 public class MasterRoutingAgent extends Agent {
 
@@ -31,27 +31,28 @@ public class MasterRoutingAgent extends Agent {
     private final GreedyEngine greedyEngine = new GreedyEngine();
     private final ALNSEngine alnsEngine = new ALNSEngine();
     private final List<AID> fleet = new ArrayList<>();
-    private final Set<Point> inVanParcels = new HashSet<>();
     private Point depot = new Point(50, 50);
     private long freezeTimeoutMs = 8000L;
     private long alnsTimeMs = 1500L;
 
-    // --- NEW: Capacity & Tracking Variables ---
+    // Capacity & Tracking Variables
     private int expectedInitialAgents = 0;
     private int capacityReportedCount = 0;
     private int totalSystemDemand = 0;
     private List<Parcel> pendingInitialParcels = new ArrayList<>();
     private Map<String, Integer> fleetCapacities = new HashMap<>();
-    public final Map<Point, Parcel> parcelDirectory = new HashMap<>(); // Maps coordinates to IDs and Demands
+    public final Map<Point, Parcel> parcelDirectory = new HashMap<>();
     private int backupCounter = 1;
 
-    // --- FLIGHT RECORDER MEMORY ---
+    // --- AUTONOMOUS & PHYSICAL TRACKING ---
+    private final Set<String> activeDrivingAgents = new HashSet<>();
+    private boolean summaryHasBeenShown = false;
+    private final Set<Point> inVanParcels = new HashSet<>();
+    private final Set<Point> dynamicTargetsThisRound = new HashSet<>();
+
+    // Flight Recorder Memory
     private final Map<String, List<Point>> initialPlannedRoutes = new HashMap<>();
     private final Map<String, List<Point>> actualDrivenRoutes = new HashMap<>();
-
-    // --- AUTONOMOUS SUMMARY TRACKING ---
-    private final java.util.Set<String> activeDrivingAgents = new java.util.HashSet<>();
-    private boolean summaryHasBeenShown = false;
 
     @Override
     protected void setup() {
@@ -60,7 +61,24 @@ public class MasterRoutingAgent extends Agent {
         myGui = new MRAGui(this);
         myGui.display();
 
-        trackerGui = new MapTrackerGui();
+        // --- Listen for 'End of Shift' Pings ---
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            @Override
+            public void action() {
+                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-done");
+                ACLMessage msg = receive(tpl);
+                if (msg != null) {
+                    activeDrivingAgents.remove(msg.getSender().getLocalName());
+
+                    if (activeDrivingAgents.isEmpty() && !summaryHasBeenShown) {
+                        System.out.println("\n*** MRA: ALL AGENTS HAVE RETURNED TO DEPOT! Launching End-of-Day Summary! ***");
+                        summaryHasBeenShown = true;
+                        RouteSummaryGui summaryGui = new RouteSummaryGui(initialPlannedRoutes, actualDrivenRoutes);
+                        summaryGui.display();
+                    }
+                } else { block(); }
+            }
+        });
 
         // Listen for Capacity inputs from DeliveryAgent GUIs
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
@@ -74,12 +92,7 @@ public class MasterRoutingAgent extends Agent {
                         int cap = Integer.parseInt(content.substring(9).trim());
                         fleetCapacities.put(msg.getSender().getLocalName(), cap);
                         capacityReportedCount++;
-
-                        System.out.println("MRA: Received capacity " + cap + " from " + msg.getSender().getLocalName() + " (" + capacityReportedCount + "/" + expectedInitialAgents + ")");
-
-                        if (capacityReportedCount == expectedInitialAgents) {
-                            checkCapacitiesAndRunSolver();
-                        }
+                        if (capacityReportedCount == expectedInitialAgents) checkCapacitiesAndRunSolver();
                     }
                 } else { block(); }
             }
@@ -96,32 +109,11 @@ public class MasterRoutingAgent extends Agent {
                 } else { block(); }
             }
         });
-        // --- Listen for 'End of Shift' Pings ---
-        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
-            public void action() {
-                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-done");
-                ACLMessage msg = receive(tpl);
-                if (msg != null) {
-                    activeDrivingAgents.remove(msg.getSender().getLocalName());
-
-                    // If everyone is done driving, pop up the summary!
-                    if (activeDrivingAgents.isEmpty() && !summaryHasBeenShown) {
-                        System.out.println("\n*** MRA: ALL AGENTS HAVE RETURNED TO DEPOT! Launching End-of-Day Summary! ***");
-                        summaryHasBeenShown = true;
-                        RouteSummaryGui summaryGui = new RouteSummaryGui(initialPlannedRoutes, actualDrivenRoutes);
-                        summaryGui.display();
-                    }
-                } else {
-                    block();
-                }
-            }
-        });
     }
 
     public void spawnInitialAgent(String name, int startX, int startY) {
         try {
-            Object[] args = new Object[]{startX + "," + startY}; // NO CAPACITY PASSED -> TRIGGERS GUI
+            Object[] args = new Object[]{startX + "," + startY};
             jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
             ac.start();
             fleet.add(new AID(name, AID.ISLOCALNAME));
@@ -133,6 +125,8 @@ public class MasterRoutingAgent extends Agent {
         pendingInitialParcels.clear();
         fleetCapacities.clear();
         parcelDirectory.clear();
+        initialPlannedRoutes.clear();
+        actualDrivenRoutes.clear();
         capacityReportedCount = 0;
         totalSystemDemand = 0;
         expectedInitialAgents = numAgents;
@@ -163,7 +157,6 @@ public class MasterRoutingAgent extends Agent {
             } catch (Exception e) { System.err.println("MRA: Failed to parse file."); }
         }
 
-        System.out.println("MRA: Total System Demand calculated at: " + totalSystemDemand + " units.");
         for (int i = 1; i <= numAgents; i++) spawnInitialAgent("DA" + i, depot.x, depot.y);
     }
 
@@ -172,14 +165,9 @@ public class MasterRoutingAgent extends Agent {
         for (int cap : fleetCapacities.values()) totalCap += cap;
 
         if (totalCap < totalSystemDemand) {
-            System.out.println("\n*** MRA INTELLIGENCE TRIGGERED ***");
-            System.out.println("WARNING: Insufficient fleet capacity (" + totalCap + " units vs " + totalSystemDemand + " demanded).");
-            System.out.println("ACTION: Spawning Automated Emergency Backup Agent...");
-
-            expectedInitialAgents++; // Tell MRA to wait for another GUI input loop!
+            expectedInitialAgents++;
             spawnInitialAgent("DA_Backup_" + backupCounter++, depot.x, depot.y);
         } else {
-            System.out.println("\nMRA: Fleet capacity sufficient (" + totalCap + "/" + totalSystemDemand + "). Proceeding to calculate initial routes...");
             runInitialOptimizationPipeline();
         }
     }
@@ -191,15 +179,14 @@ public class MasterRoutingAgent extends Agent {
                 RouteState baseState = new RouteState();
                 for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
 
-                // Pass new HashSet<>() because at the start of the day, all parcels are at the warehouse!
                 for (Parcel p : pendingInitialParcels) {
-                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory, new HashSet<>());
+                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory);
                 }
 
                 System.out.println("MRA: Running ALNS engine...");
-                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory, new HashSet<>());
-                // --- RECORD PHASE 1 PLANNED ROUTES ---
-                initialPlannedRoutes.clear();
+                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory);
+
+                // Record Initial Plan
                 for (Map.Entry<String, List<Point>> entry : optimizedState.getRoutes().entrySet()) {
                     initialPlannedRoutes.put(entry.getKey(), new ArrayList<>(entry.getValue()));
                 }
@@ -207,7 +194,8 @@ public class MasterRoutingAgent extends Agent {
                 dispatch(optimizedState, new HashMap<>());
 
                 myGui.unlockPhase2();
-                if (trackerGui != null) trackerGui.display();
+                if (trackerGui == null) trackerGui = new MapTrackerGui();
+                trackerGui.display();
             }
         });
     }
@@ -215,6 +203,10 @@ public class MasterRoutingAgent extends Agent {
     public void injectDynamicParcel(Parcel newParcel) {
         if (fleet.isEmpty()) return;
         parcelDirectory.put(newParcel.getDestination(), newParcel);
+
+        dynamicTargetsThisRound.clear();
+        dynamicTargetsThisRound.add(newParcel.getDestination()); // Explicitly flag this as a brand new box!
+
         addBehaviour(new FreezeOptimizeDispatchBehaviour(newParcel));
     }
 
@@ -256,7 +248,7 @@ public class MasterRoutingAgent extends Agent {
                 if (pending.containsKey(name)) {
                     AgentStatus status = parseStatus(msg.getContent());
                     pending.put(name, status);
-                    fleetCapacities.put(name, status.maxCapacity); // Update active capacities
+                    fleetCapacities.put(name, status.maxCapacity);
                 }
             }
             if (pending.values().stream().allMatch(s -> s != null) || System.currentTimeMillis() > waitUntil) phase = 2;
@@ -265,9 +257,8 @@ public class MasterRoutingAgent extends Agent {
 
         private void runSolversAndDispatch() {
             RouteState state = mergeFleetState(pending);
-            // Pass the populated inVanParcels list so it knows who has what!
-            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory, inVanParcels);
-            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory, inVanParcels);
+            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory);
+            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory);
             dispatch(optimized, pending);
             phase = 3;
         }
@@ -275,20 +266,50 @@ public class MasterRoutingAgent extends Agent {
     }
 
     private void dispatch(RouteState state, Map<String, AgentStatus> lastKnown) {
+        summaryHasBeenShown = false;
+
         for (AID aid : fleet) {
             String name = aid.getLocalName();
             activeDrivingAgents.add(name);
+
             List<Point> pts = state.getRoutes().get(name);
             if (pts == null || pts.size() < 2) continue;
 
-            List<Point> stops = new ArrayList<>(pts);
+            List<Point> stops = new ArrayList<>();
+            Point currentLoc = pts.get(0);
+            stops.add(currentLoc);
 
-            // --- NEW REQUIREMENT: Force route to end at Warehouse ---
+            // INTELLIGENT PHYSICAL DETOUR LOGIC
+            // If they are currently at the depot, they are already loaded!
+            boolean hasVisitedDepotThisTrip = currentLoc.equals(depot);
+
+            for (int i = 1; i < pts.size(); i++) {
+                Point p = pts.get(i);
+
+                if (p.equals(depot)) {
+                    hasVisitedDepotThisTrip = true;
+                    stops.add(p);
+                    continue;
+                }
+
+                // If it is NOT in the van, OR it was just injected dynamically, it's a NEW box.
+                boolean isNewParcel = !inVanParcels.contains(p) || dynamicTargetsThisRound.contains(p);
+
+                // If it's a new box, and we haven't gone to the warehouse yet, FORCE a detour right now!
+                if (isNewParcel && !hasVisitedDepotThisTrip) {
+                    stops.add(new Point(depot));
+                    hasVisitedDepotThisTrip = true; // Box is now loaded
+                }
+
+                stops.add(p);
+            }
+
+            // Force route to end at Warehouse
             if (!stops.isEmpty() && !stops.get(stops.size() - 1).equals(depot)) {
                 stops.add(new Point(depot));
             }
 
-            // Remove consecutive duplicates (e.g., if GreedyEngine stacked two Depot visits back-to-back)
+            // Remove consecutive duplicates
             for (int i = stops.size() - 1; i > 0; i--) {
                 if (stops.get(i).equals(stops.get(i - 1))) {
                     stops.remove(i);
@@ -303,9 +324,8 @@ public class MasterRoutingAgent extends Agent {
                 if (i > 1) coords.append(',');
                 coords.append(p.x).append(':').append(p.y);
 
-                // Format the Console Log for easy reading
                 if (p.equals(depot)) {
-                    routeLog.append("Warehouse(Pickup/Return) ");
+                    routeLog.append("Warehouse(Pickup) ");
                 } else {
                     Parcel parcel = parcelDirectory.get(p);
                     routeLog.append(parcel != null ? parcel.getId() : ("Unk(" + p.x + ")")).append(" ");
@@ -328,7 +348,6 @@ public class MasterRoutingAgent extends Agent {
         }
     }
 
-    // --- Helpers (Status Parsing and GPS) ---
     private static class AgentStatus {
         final Point location; final int freeCapacity; final int maxCapacity; final List<Point> tailStops;
         AgentStatus(Point loc, int free, int max, List<Point> tail) { location = loc; freeCapacity = free; maxCapacity = max; tailStops = tail; }
@@ -351,7 +370,7 @@ public class MasterRoutingAgent extends Agent {
 
     private RouteState mergeFleetState(Map<String, AgentStatus> byName) {
         RouteState state = new RouteState();
-        inVanParcels.clear(); // Reset for the current freeze frame
+        inVanParcels.clear();
 
         for (AID aid : fleet) {
             String name = aid.getLocalName();
@@ -359,9 +378,14 @@ public class MasterRoutingAgent extends Agent {
             state.addAgent(name, st != null ? st.location : new Point(depot));
 
             if (st != null) {
+                // Determine what is ACTUALLY physically in the van right now
+                boolean passedDepot = st.location.equals(depot);
                 for (Point p : st.tailStops) {
-                    if (!p.equals(depot)) {
-                        inVanParcels.add(p); // Mark that this parcel is physically already in the van!
+                    if (p.equals(depot)) {
+                        passedDepot = true;
+                    } else if (!passedDepot) {
+                        // Any customer before the depot detour is physically in the van!
+                        inVanParcels.add(p);
                     }
                     state.insertNode(name, state.getRoutes().get(name).size(), new Point(p));
                 }
@@ -377,9 +401,7 @@ public class MasterRoutingAgent extends Agent {
             String[] locCoords = parts[0].split(",");
             Point currentLoc = new Point(Integer.parseInt(locCoords[0]), Integer.parseInt(locCoords[1]));
 
-            // --- RECORD PHYSICAL BREADCRUMB TRAIL ---
             List<Point> history = actualDrivenRoutes.computeIfAbsent(agentName, k -> new ArrayList<>());
-            // Only add the point if the agent actually moved (saves memory)
             if (history.isEmpty() || !history.get(history.size() - 1).equals(currentLoc)) {
                 history.add(currentLoc);
             }
@@ -395,31 +417,16 @@ public class MasterRoutingAgent extends Agent {
         } catch (Exception e) {}
     }
 
-    // ==========================================
-    // PHASE 2: DYNAMIC MID-ROUTE SPAWNING
-    // ==========================================
-    // Called by the Phase 2 GUI to deploy an agent mid-simulation
-    public void spawnDynamicAgent(String name, int startX, int startY, int capacity) {
-        try {
-            // Passing X, Y, and Capacity so it instantly joins the fleet mid-route
-            Object[] args = new Object[]{startX + "," + startY + "," + capacity};
-
-            jade.wrapper.AgentController ac = getContainerController().createNewAgent(
-                    name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
-            ac.start();
-
-            // Add to the tracking lists so ALNS can use it on the next calculation!
-            fleet.add(new AID(name, AID.ISLOCALNAME));
-            fleetCapacities.put(name, capacity);
-
-            System.out.println("\n*** MRA: Dynamically added standby agent " + name + " to the active fleet with capacity " + capacity + "! ***");
-        } catch (Exception e) {
-            System.err.println("Failed to spawn dynamic agent: " + name);
-            e.printStackTrace();
-        }
-    }
-
     public Map<String, List<Point>> getInitialPlannedRoutes() { return initialPlannedRoutes; }
     public Map<String, List<Point>> getActualDrivenRoutes() { return actualDrivenRoutes; }
 
+    public void spawnDynamicAgent(String name, int startX, int startY, int capacity) {
+        try {
+            Object[] args = new Object[]{startX + "," + startY + "," + capacity};
+            jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
+            ac.start();
+            fleet.add(new AID(name, AID.ISLOCALNAME));
+            fleetCapacities.put(name, capacity);
+        } catch (Exception e) {}
+    }
 }

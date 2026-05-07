@@ -5,10 +5,11 @@ import java.awt.Point;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class ALNSEngine {
 
-    public RouteState optimize(RouteState startState, long timeLimitMs, Map<String, Integer> capacities, Map<Point, Parcel> directory) {
+    public RouteState optimize(RouteState startState, long timeLimitMs, Map<String, Integer> capacities, Map<Point, Parcel> directory, Set<Point> inVanParcels) {
         long startTime = System.currentTimeMillis();
         RouteState currentBest = startState.cloneState();
         RouteState workingState = startState.cloneState();
@@ -19,15 +20,15 @@ public class ALNSEngine {
             iterations++;
             List<Point> unassigned = new ArrayList<>();
 
-            // 1. Destroy (Rip 2 parcels out randomly)
+            // 1. Destroy
             workingState.randomRemoval(2, unassigned);
 
-            // 2. Repair (Put them back using Greedy logic, respecting capacity)
+            // 2. Repair (Passes the in-van tracking list down!)
             GreedyEngine repairEngine = new GreedyEngine();
             for (Point p : unassigned) {
                 Parcel actualParcel = directory.get(p);
                 int demand = actualParcel != null ? actualParcel.getDemand() : 1;
-                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, demand), workingState, capacities, directory);
+                workingState = repairEngine.insertNewParcel(new Parcel("temp", p.x, p.y, demand), workingState, capacities, directory, inVanParcels);
             }
 
             // 3. Evaluate
@@ -38,7 +39,6 @@ public class ALNSEngine {
             }
         }
 
-        // --- Output the distance rounded to 2 decimal places ---
         System.out.printf("ALNS finished %d iterations. Best distance: %.2f\n", iterations, currentBest.getTotalDistance());
         return currentBest;
     }

@@ -50,21 +50,21 @@ public class RouteState {
         int attempts = 0;
         int removed = 0;
 
-        // Loop until we remove the required number of actual parcels
         while (removed < count && attempts < 50) {
             attempts++;
             List<String> keys = new ArrayList<>(routes.keySet());
             String randomAgent = keys.get(random.nextInt(keys.size()));
             List<Point> route = routes.get(randomAgent);
 
-            // Don't remove their starting position (index 0)
             if (route.size() > 1) {
                 int removeIdx = 1 + random.nextInt(route.size() - 1);
-                Point p = route.remove(removeIdx);
 
-                // Only add actual parcels to the unassigned pool.
-                // If ALNS ripped out a warehouse detour, just let it vanish!
+                // FIX 1: PEEK at the node first!
+                Point p = route.get(removeIdx);
+
+                // Only rip it out of the route if it is an actual customer parcel
                 if (!p.equals(depot)) {
+                    route.remove(removeIdx);
                     unassigned.add(p);
                     removed++;
                 }

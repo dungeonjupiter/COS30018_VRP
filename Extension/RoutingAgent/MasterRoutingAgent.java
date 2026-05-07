@@ -15,6 +15,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.HashSet;
 
 public class MasterRoutingAgent extends Agent {
 
@@ -29,6 +31,7 @@ public class MasterRoutingAgent extends Agent {
     private final GreedyEngine greedyEngine = new GreedyEngine();
     private final ALNSEngine alnsEngine = new ALNSEngine();
     private final List<AID> fleet = new ArrayList<>();
+    private final Set<Point> inVanParcels = new HashSet<>();
     private Point depot = new Point(50, 50);
     private long freezeTimeoutMs = 8000L;
     private long alnsTimeMs = 1500L;
@@ -188,13 +191,13 @@ public class MasterRoutingAgent extends Agent {
                 RouteState baseState = new RouteState();
                 for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
 
+                // Pass new HashSet<>() because at the start of the day, all parcels are at the warehouse!
                 for (Parcel p : pendingInitialParcels) {
-                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory);
+                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory, new HashSet<>());
                 }
 
                 System.out.println("MRA: Running ALNS engine...");
-                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory);
-
+                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory, new HashSet<>());
                 // --- RECORD PHASE 1 PLANNED ROUTES ---
                 initialPlannedRoutes.clear();
                 for (Map.Entry<String, List<Point>> entry : optimizedState.getRoutes().entrySet()) {
@@ -262,8 +265,9 @@ public class MasterRoutingAgent extends Agent {
 
         private void runSolversAndDispatch() {
             RouteState state = mergeFleetState(pending);
-            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory);
-            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory);
+            // Pass the populated inVanParcels list so it knows who has what!
+            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory, inVanParcels);
+            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory, inVanParcels);
             dispatch(optimized, pending);
             phase = 3;
         }
@@ -347,11 +351,21 @@ public class MasterRoutingAgent extends Agent {
 
     private RouteState mergeFleetState(Map<String, AgentStatus> byName) {
         RouteState state = new RouteState();
+        inVanParcels.clear(); // Reset for the current freeze frame
+
         for (AID aid : fleet) {
             String name = aid.getLocalName();
             AgentStatus st = byName.get(name);
             state.addAgent(name, st != null ? st.location : new Point(depot));
-            if (st != null) for (Point p : st.tailStops) state.insertNode(name, state.getRoutes().get(name).size(), new Point(p));
+
+            if (st != null) {
+                for (Point p : st.tailStops) {
+                    if (!p.equals(depot)) {
+                        inVanParcels.add(p); // Mark that this parcel is physically already in the van!
+                    }
+                    state.insertNode(name, state.getRoutes().get(name).size(), new Point(p));
+                }
+            }
         }
         return state;
     }

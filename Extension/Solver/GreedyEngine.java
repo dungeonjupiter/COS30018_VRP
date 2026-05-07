@@ -4,10 +4,11 @@ import RoutingAgent.Extension.RoutingAgent.*;
 import java.awt.Point;
 import java.util.Map;
 import java.util.List;
+import java.util.Set;
 
 public class GreedyEngine {
 
-    public RouteState insertNewParcel(Parcel newParcel, RouteState currentState, Map<String, Integer> capacities, Map<Point, Parcel> directory) {
+    public RouteState insertNewParcel(Parcel newParcel, RouteState currentState, Map<String, Integer> capacities, Map<Point, Parcel> directory, Set<Point> inVanParcels) {
         RouteState newState = currentState.cloneState();
         double bestCost = Double.MAX_VALUE;
         String bestAgent = null;
@@ -28,15 +29,13 @@ public class GreedyEngine {
 
             int agentMaxCap = capacities.getOrDefault(agentName, 5);
             if (currentLoad + newParcel.getDemand() > agentMaxCap) {
-                continue; // Van is full! Skip this agent.
+                continue;
             }
 
-            // Test inserting at every possible position
             for (int i = 1; i <= route.size(); i++) {
                 Point prev = route.get(i - 1);
                 Point next = (i == route.size()) ? depot : route.get(i);
 
-                // Check if agent has visited the depot before this proposed index
                 boolean hasVisitedDepot = false;
                 for (int k = 0; k < i; k++) {
                     if (route.get(k).equals(depot)) {
@@ -48,11 +47,14 @@ public class GreedyEngine {
                 double cost;
                 boolean needsNewDepotNode = !hasVisitedDepot;
 
+                // --- FIX 2: Bypassing Depot Detour for In-Van Parcels ---
+                if (inVanParcels != null && inVanParcels.contains(newParcel.getDestination())) {
+                    needsNewDepotNode = false;
+                }
+
                 if (needsNewDepotNode) {
-                    // Calculate the mathematical cost of taking a massive detour to the warehouse first
                     cost = prev.distance(depot) + depot.distance(newParcel.getDestination()) + newParcel.getDestination().distance(next) - prev.distance(next);
                 } else {
-                    // Normal insertion cost
                     cost = prev.distance(newParcel.getDestination()) + newParcel.getDestination().distance(next) - prev.distance(next);
                 }
 
@@ -66,7 +68,6 @@ public class GreedyEngine {
         }
 
         if (bestAgent != null) {
-            // If the algorithm determined this slot requires a warehouse pickup, physically insert it!
             if (bestNeedsDepot) {
                 newState.insertNode(bestAgent, bestIndex, depot);
                 newState.insertNode(bestAgent, bestIndex + 1, newParcel.getDestination());

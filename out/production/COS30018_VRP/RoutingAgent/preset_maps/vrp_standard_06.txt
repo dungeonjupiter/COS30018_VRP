@@ -1,0 +1,46 @@
+# VRP Standard Map 06 — Asymmetric Fleet
+# 1 warehouse (top-centre), 12 customers, 12 parcels, 3 agents with unequal capacity
+# Coordinate grid: 0-100 x 0-100
+# Total capacity: 15 (3+5+7), slack 3
+# Routing challenge: heterogeneous fleet forces the planner to decide how to allocate
+#   parcels across agents of different sizes. The high-capacity agent should naturally
+#   absorb the denser far-side cluster; the light agent handles nearby quick runs.
+
+WAREHOUSE 50 90
+
+# Near cluster (close to warehouse — good fit for the light agent)
+CUSTOMER 1  35 78
+CUSTOMER 2  50 72
+CUSTOMER 3  65 78
+CUSTOMER 4  42 62
+
+# Mid-range scatter
+CUSTOMER 5  20 55
+CUSTOMER 6  78 52
+CUSTOMER 7  35 42
+CUSTOMER 8  65 38
+
+# Far cluster (far from warehouse — benefits from the heavy agent making one sweep)
+CUSTOMER 9  15 20
+CUSTOMER 10 35 10
+CUSTOMER 11 55 15
+CUSTOMER 12 78 22
+
+# Parcels — one per customer
+PARCEL 1  DEST 1
+PARCEL 2  DEST 2
+PARCEL 3  DEST 3
+PARCEL 4  DEST 4
+PARCEL 5  DEST 5
+PARCEL 6  DEST 6
+PARCEL 7  DEST 7
+PARCEL 8  DEST 8
+PARCEL 9  DEST 9
+PARCEL 10 DEST 10
+PARCEL 11 DEST 11
+PARCEL 12 DEST 12
+
+# Agents — heterogeneous fleet
+AGENT 1 CAPACITY 3
+AGENT 2 CAPACITY 5
+AGENT 3 CAPACITY 7

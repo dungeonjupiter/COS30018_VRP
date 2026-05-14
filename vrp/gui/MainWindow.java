@@ -1,7 +1,9 @@
 package RoutingAgent.vrp.gui;
 
 import RoutingAgent.vrp.agent.MasterRoutingAgent;
+import RoutingAgent.vrp.algorithm.ClarkeWrightPlanner;
 import RoutingAgent.vrp.algorithm.GreedyPlanner;
+import RoutingAgent.vrp.algorithm.TabuPlanner;
 import RoutingAgent.vrp.io.MapLoader;
 import RoutingAgent.vrp.model.*;
 import jade.core.Profile;
@@ -24,7 +26,11 @@ public class MainWindow extends JFrame {
     private final JPanel infoPanel;
     private JButton planBtn;
     private JButton simBtn;
+    private JButton endSimBtn;
     private JButton addParcelBtn;
+    private JButton burstParcelBtn;
+    private JButton addAgentBtn;
+    private JComboBox<String> algoBox;
     private JTextField xField;
     private JTextField yField;
     private AgentContainer     jadeContainer;
@@ -61,10 +67,9 @@ public class MainWindow extends JFrame {
 
     // ── dashboard ─────────────────────────────────────────────────────────────
 
-    private JPanel buildDashboard() {
+    private JScrollPane buildDashboard() {
         JPanel dash = new JPanel();
         dash.setLayout(new BoxLayout(dash, BoxLayout.Y_AXIS));
-        dash.setPreferredSize(new Dimension(250, 660));
         dash.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
         dash.setBackground(new Color(245, 245, 248));
 
@@ -86,7 +91,15 @@ public class MainWindow extends JFrame {
         JPanel routeSection = new JPanel(new BorderLayout(4, 4));
         routeSection.setBorder(new TitledBorder("Routing"));
         routeSection.setBackground(dash.getBackground());
-        planBtn = new JButton("Plan Routes (Greedy)");
+
+        JPanel algoRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 2));
+        algoRow.setBackground(dash.getBackground());
+        algoRow.add(new JLabel("Algorithm:"));
+        algoBox = new JComboBox<>(new String[]{"Greedy", "Clarke-Wright", "Tabu Search"});
+        algoRow.add(algoBox);
+        routeSection.add(algoRow, BorderLayout.NORTH);
+
+        planBtn = new JButton("Plan Routes");
         planBtn.setEnabled(false);
         planBtn.addActionListener(e -> planRoutes());
         routeSection.add(planBtn, BorderLayout.CENTER);
@@ -100,7 +113,15 @@ public class MainWindow extends JFrame {
         simBtn = new JButton("Start Simulation");
         simBtn.setEnabled(false);
         simBtn.addActionListener(e -> startSimulation());
-        simSection.add(simBtn, BorderLayout.CENTER);
+        endSimBtn = new JButton("End Simulation");
+        endSimBtn.setEnabled(false);
+        endSimBtn.setForeground(new Color(180, 30, 30));
+        endSimBtn.addActionListener(e -> endSimulation());
+        JPanel simBtns = new JPanel(new GridLayout(2, 1, 0, 4));
+        simBtns.setBackground(dash.getBackground());
+        simBtns.add(simBtn);
+        simBtns.add(endSimBtn);
+        simSection.add(simBtns, BorderLayout.CENTER);
         dash.add(simSection);
         dash.add(Box.createVerticalStrut(6));
 
@@ -108,11 +129,16 @@ public class MainWindow extends JFrame {
         dash.add(buildAddParcelPanel());
         dash.add(Box.createVerticalStrut(6));
 
-        // — Phase 6 placeholder
-        dash.add(buildPlaceholder("Add Agent", "Phase 6"));
+        // — Add Agent (Phase 6)
+        dash.add(buildAddAgentPanel());
 
         dash.add(Box.createVerticalGlue());
-        return dash;
+        JScrollPane scroll = new JScrollPane(dash,
+                JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+                JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setPreferredSize(new Dimension(262, 660));
+        scroll.getVerticalScrollBar().setUnitIncrement(12);
+        return scroll;
     }
 
     private JPanel buildAddParcelPanel() {
@@ -132,7 +158,7 @@ public class MainWindow extends JFrame {
         coords.add(yField);
         p.add(coords);
 
-        // Button row
+        // Single parcel row
         JPanel btns = new JPanel(new GridLayout(1, 2, 4, 2));
         btns.setBackground(p.getBackground());
         JButton randomBtn = new JButton("Random");
@@ -144,7 +170,31 @@ public class MainWindow extends JFrame {
         btns.add(addParcelBtn);
         p.add(btns);
 
+        // Burst row
+        JPanel burstRow = new JPanel(new BorderLayout(4, 2));
+        burstRow.setBackground(p.getBackground());
+        burstParcelBtn = new JButton("Randomly Add 5 Parcels");
+        burstParcelBtn.setEnabled(false);
+        burstParcelBtn.addActionListener(e -> submitBurstParcels());
+        burstRow.add(burstParcelBtn, BorderLayout.CENTER);
+        p.add(burstRow);
+
         return p;
+    }
+
+    private void submitBurstParcels() {
+        if (mraInstance == null) return;
+        double minX = worldState.customers.stream().mapToDouble(c -> c.x).min().orElse(5);
+        double maxX = worldState.customers.stream().mapToDouble(c -> c.x).max().orElse(95);
+        double minY = worldState.customers.stream().mapToDouble(c -> c.y).min().orElse(5);
+        double maxY = worldState.customers.stream().mapToDouble(c -> c.y).max().orElse(95);
+        Random rng = new Random();
+        for (int i = 0; i < 5; i++) {
+            double x = minX + rng.nextDouble() * (maxX - minX);
+            double y = minY + rng.nextDouble() * (maxY - minY);
+            mraInstance.requestAddParcel(x, y);
+        }
+        log("Burst: 5 random parcels queued");
     }
 
     private void fillRandom() {
@@ -170,6 +220,35 @@ public class MainWindow extends JFrame {
         } catch (NumberFormatException ex) {
             log("Invalid coordinates — enter numbers or click Random first");
         }
+    }
+
+    private JPanel buildAddAgentPanel() {
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setBorder(new TitledBorder("Add Agent"));
+        p.setBackground(new Color(245, 245, 248));
+
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 2));
+        row.setBackground(p.getBackground());
+        row.add(new JLabel("Capacity:"));
+        JSpinner capSpinner = new JSpinner(new SpinnerNumberModel(5, 1, 20, 1));
+        capSpinner.setPreferredSize(new Dimension(55, 22));
+        row.add(capSpinner);
+        p.add(row);
+
+        JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 2));
+        btnRow.setBackground(p.getBackground());
+        addAgentBtn = new JButton("Add Agent");
+        addAgentBtn.setEnabled(false);
+        addAgentBtn.addActionListener(e -> {
+            if (mraInstance == null) return;
+            addAgentBtn.setEnabled(false);
+            mraInstance.requestAddAgent((int) capSpinner.getValue());
+        });
+        btnRow.add(addAgentBtn);
+        p.add(btnRow);
+
+        return p;
     }
 
     private JPanel buildPlaceholder(String title, String phase) {
@@ -247,11 +326,26 @@ public class MainWindow extends JFrame {
 
     private void planRoutes() {
         if (worldState == null) return;
-        GreedyPlanner.plan(worldState);
+        int algoIdx = algoBox.getSelectedIndex();
+        String algoName;
+        switch (algoIdx) {
+            case 1:
+                ClarkeWrightPlanner.plan(worldState);
+                algoName = "Clarke-Wright";
+                break;
+            case 2:
+                TabuPlanner.plan(worldState);
+                algoName = "Tabu Search";
+                break;
+            default:
+                GreedyPlanner.plan(worldState);
+                algoName = "Greedy";
+                break;
+        }
         mapPanel.setWorldState(worldState);
         refreshInfoPanel();
 
-        StringBuilder sb = new StringBuilder("Greedy plan —");
+        StringBuilder sb = new StringBuilder(algoName + " plan —");
         double total = 0;
         for (AgentState a : worldState.agents) {
             if (!a.remainingRoute.isEmpty()) {
@@ -308,7 +402,10 @@ public class MainWindow extends JFrame {
             mra.start();
             mapPanel.startAnimation();
             addParcelBtn.setEnabled(true);
-            log("JADE started — simulation running");
+            burstParcelBtn.setEnabled(true);
+            addAgentBtn.setEnabled(true);
+            endSimBtn.setEnabled(true);
+            log("JADE started — simulation running  (click End Simulation to stop)");
         } catch (Exception e) {
             log("ERROR starting simulation: " + e.getMessage());
             planBtn.setEnabled(true);
@@ -325,6 +422,10 @@ public class MainWindow extends JFrame {
         SwingUtilities.invokeLater(() -> addParcelBtn.setEnabled(enabled));
     }
 
+    public void setAddAgentEnabled(boolean enabled) {
+        SwingUtilities.invokeLater(() -> addAgentBtn.setEnabled(enabled));
+    }
+
     public void refreshMap() {
         SwingUtilities.invokeLater(() -> {
             if (worldState != null) refreshInfoPanel();
@@ -334,11 +435,26 @@ public class MainWindow extends JFrame {
     public void onSimulationComplete() {
         SwingUtilities.invokeLater(() -> {
             mapPanel.stopAnimation();
-            mapPanel.repaint();
             addParcelBtn.setEnabled(false);
+            burstParcelBtn.setEnabled(false);
+            addAgentBtn.setEnabled(false);
+            endSimBtn.setEnabled(false);
             mraInstance = null;
+            // Auto-reset routes so Start Simulation works immediately without forcing
+            // the user to manually click Plan Routes first.
+            GreedyPlanner.plan(worldState);
+            mapPanel.setWorldState(worldState);
+            refreshInfoPanel();
+            mapPanel.repaint();
             planBtn.setEnabled(true);
+            simBtn.setEnabled(true);
         });
+    }
+
+    private void endSimulation() {
+        if (mraInstance == null) return;
+        endSimBtn.setEnabled(false);
+        mraInstance.stopSimulation();
     }
 
     // ── log ───────────────────────────────────────────────────────────────────

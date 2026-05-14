@@ -18,7 +18,7 @@ public class DeliveryAgent extends Agent {
     // to avoid double-moves when a replan fires mid-journey.
     private volatile int routeGeneration = 0;
 
-    private static final double MOVE_SPEED = 12.0; // map units per second
+    private static final double MOVE_SPEED = 6;  // map units per second (40 % slower than original 12.0)
     private static final long   DWELL_MS   = 300;  // pause at each delivery stop
 
     @Override
@@ -58,6 +58,20 @@ public class DeliveryAgent extends Agent {
         }
 
         private void parseAndLoadRoute(String content) {
+            // If frozen mid-animation, snap currentX/Y to the actual visual position
+            // so the next doMove() departs from where the dot really is, not from the
+            // old destination that was never reached.
+            if (frozen && agentState.moveDurationMs > 0) {
+                long now = System.currentTimeMillis();
+                double t = Math.min(1.0,
+                        (double)(now - agentState.moveStartMs) / agentState.moveDurationMs);
+                agentState.currentX = agentState.prevX + (agentState.currentX - agentState.prevX) * t;
+                agentState.currentY = agentState.prevY + (agentState.currentY - agentState.prevY) * t;
+                agentState.prevX = agentState.currentX;
+                agentState.prevY = agentState.currentY;
+                agentState.moveDurationMs = 0;
+            }
+
             String[] parts = content.split("\\|");
             agentState.remainingRoute.clear();
 
@@ -131,15 +145,17 @@ public class DeliveryAgent extends Agent {
             scheduleMove(agentState.moveDurationMs + DWELL_MS);
 
         } else if (next.type == StopType.RETURN_TO_WAREHOUSE) {
-            notifyMRA(Protocol.ALL_DELIVERED + "|" + agentState.id);
-            // Defer STANDBY until the return animation completes so the dot
-            // stays visible while travelling back to the warehouse.
-            // Capture the generation so a mid-flight replan cancels this deferral.
+            // Defer both STANDBY and ALL_DELIVERED until the return animation completes.
+            // Sending ALL_DELIVERED immediately would let MRA re-dispatch or mark the agent
+            // idle before it physically arrives at the warehouse.
             final long returnDuration = agentState.moveDurationMs;
             final int  gen            = routeGeneration;
             addBehaviour(new WakerBehaviour(this, returnDuration + 100) {
                 @Override protected void onWake() {
-                    if (gen == routeGeneration) agentState.status = AgentStatus.STANDBY;
+                    if (gen == routeGeneration) {
+                        agentState.status = AgentStatus.STANDBY;
+                        notifyMRA(Protocol.ALL_DELIVERED + "|" + agentState.id);
+                    }
                 }
             });
         }

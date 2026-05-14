@@ -1,0 +1,56 @@
+# VRP Standard Map 02 — Four Quadrant Clusters
+# 1 warehouse (centre), 16 customers in 4 tight corner clusters, 16 parcels, 4 agents
+# Coordinate grid: 0-100 x 0-100
+# Total capacity: 20 (4 x 5), slack 4 — one free slot per agent for dynamic additions
+# Routing challenge: greedy should discover cluster-based assignment naturally;
+#   optimal is one agent per quadrant.
+
+WAREHOUSE 50 50
+
+# NW cluster
+CUSTOMER 1  12 82
+CUSTOMER 2  22 78
+CUSTOMER 3  18 68
+CUSTOMER 4  28 75
+
+# NE cluster
+CUSTOMER 5  78 82
+CUSTOMER 6  88 72
+CUSTOMER 7  72 75
+CUSTOMER 8  82 65
+
+# SW cluster
+CUSTOMER 9  12 22
+CUSTOMER 10 22 18
+CUSTOMER 11 18 32
+CUSTOMER 12 28 28
+
+# SE cluster
+CUSTOMER 13 78 18
+CUSTOMER 14 88 28
+CUSTOMER 15 72 25
+CUSTOMER 16 82 35
+
+# Parcels — one per customer
+PARCEL 1  DEST 1
+PARCEL 2  DEST 2
+PARCEL 3  DEST 3
+PARCEL 4  DEST 4
+PARCEL 5  DEST 5
+PARCEL 6  DEST 6
+PARCEL 7  DEST 7
+PARCEL 8  DEST 8
+PARCEL 9  DEST 9
+PARCEL 10 DEST 10
+PARCEL 11 DEST 11
+PARCEL 12 DEST 12
+PARCEL 13 DEST 13
+PARCEL 14 DEST 14
+PARCEL 15 DEST 15
+PARCEL 16 DEST 16
+
+# Agents — 4 agents, capacity 5 each
+AGENT 1 CAPACITY 5
+AGENT 2 CAPACITY 5
+AGENT 3 CAPACITY 5
+AGENT 4 CAPACITY 5

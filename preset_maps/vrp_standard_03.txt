@@ -1,0 +1,48 @@
+# VRP Standard Map 03 — Coastal Perimeter
+# 1 warehouse (SW corner), 15 customers arranged around the map perimeter, 15 parcels, 3 agents
+# Coordinate grid: 0-100 x 0-100
+# Total capacity: 18 (3 x 6), slack 3
+# Routing challenge: off-centre warehouse forces long outbound legs;
+#   customers form a ring so the optimal tour is almost a full circuit.
+
+WAREHOUSE 8 8
+
+# Perimeter ring, clockwise from north-west
+CUSTOMER 1  15 85
+CUSTOMER 2  30 92
+CUSTOMER 3  50 88
+CUSTOMER 4  70 82
+CUSTOMER 5  88 70
+CUSTOMER 6  92 50
+CUSTOMER 7  88 28
+CUSTOMER 8  72 12
+CUSTOMER 9  50  5
+CUSTOMER 10 28 18
+# Interior cuts to break the pure ring
+CUSTOMER 11 45 55
+CUSTOMER 12 65 42
+CUSTOMER 13 38 68
+CUSTOMER 14 22 45
+CUSTOMER 15 75 62
+
+# Parcels — one per customer
+PARCEL 1  DEST 1
+PARCEL 2  DEST 2
+PARCEL 3  DEST 3
+PARCEL 4  DEST 4
+PARCEL 5  DEST 5
+PARCEL 6  DEST 6
+PARCEL 7  DEST 7
+PARCEL 8  DEST 8
+PARCEL 9  DEST 9
+PARCEL 10 DEST 10
+PARCEL 11 DEST 11
+PARCEL 12 DEST 12
+PARCEL 13 DEST 13
+PARCEL 14 DEST 14
+PARCEL 15 DEST 15
+
+# Agents — 3 agents, capacity 6 each
+AGENT 1 CAPACITY 6
+AGENT 2 CAPACITY 6
+AGENT 3 CAPACITY 6

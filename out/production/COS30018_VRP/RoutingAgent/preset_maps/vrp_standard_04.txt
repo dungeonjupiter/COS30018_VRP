@@ -1,0 +1,47 @@
+# VRP Standard Map 04 — Warehouse District Grid
+# 1 warehouse (top-left), 15 customers in a 4-column structured grid, 15 parcels, 3 agents
+# Coordinate grid: 0-100 x 0-100
+# Total capacity: 18 (3 x 6), slack 3
+# Routing challenge: regular grid layout means nearest-neighbour performs near-optimally;
+#   good baseline for comparing algorithm quality.
+
+WAREHOUSE 10 90
+
+# Grid layout — columns at x=25,45,65,85; rows at y=72,52,32,12
+CUSTOMER 1  25 72
+CUSTOMER 2  45 72
+CUSTOMER 3  65 72
+CUSTOMER 4  85 72
+CUSTOMER 5  25 52
+CUSTOMER 6  45 52
+CUSTOMER 7  65 52
+CUSTOMER 8  85 52
+CUSTOMER 9  25 32
+CUSTOMER 10 45 32
+CUSTOMER 11 65 32
+CUSTOMER 12 85 32
+CUSTOMER 13 25 12
+CUSTOMER 14 45 12
+CUSTOMER 15 65 12
+
+# Parcels — one per customer
+PARCEL 1  DEST 1
+PARCEL 2  DEST 2
+PARCEL 3  DEST 3
+PARCEL 4  DEST 4
+PARCEL 5  DEST 5
+PARCEL 6  DEST 6
+PARCEL 7  DEST 7
+PARCEL 8  DEST 8
+PARCEL 9  DEST 9
+PARCEL 10 DEST 10
+PARCEL 11 DEST 11
+PARCEL 12 DEST 12
+PARCEL 13 DEST 13
+PARCEL 14 DEST 14
+PARCEL 15 DEST 15
+
+# Agents — 3 agents, capacity 6 each
+AGENT 1 CAPACITY 6
+AGENT 2 CAPACITY 6
+AGENT 3 CAPACITY 6

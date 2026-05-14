@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -f \"node src/server.js\")",
+      "Bash(node -e ' *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(curl -s http://localhost:5001/test)",
+      "Bash(pkill -f \"node\")",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 20176 /F)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'{q[\\\\\"symbol\\\\\"]}: \\\\${q[\\\\\"c\\\\\"]:.2f} \\({q[\\\\\"dp\\\\\"]:+.2f}%\\)'\\) for q in d]\")",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(curl -s http://localhost:5000/)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Jarren\\\\Documents\\\\GitHub\\\\COS30018_VRP\" -Recurse -Force)",
+      "Bash(Select-Object FullName)",
+      "Bash(ConvertTo-Csv -NoTypeInformation)",
+      "Bash(Select-Object -Skip 1)"
+    ]
+  }
+}

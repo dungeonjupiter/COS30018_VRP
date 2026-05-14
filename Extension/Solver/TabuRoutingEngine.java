@@ -10,7 +10,7 @@ public class TabuRoutingEngine {
     public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities, Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength) {
         RouteState workingState = currentState.cloneState();
 
-        // PHASE 1: Fast Geometric Insertion (Replaces GreedyEngine)
+        // PHASE 1: Fast Geometric Insertion
         if (newParcel != null) {
             double bestCost = Double.MAX_VALUE;
             String bestAgent = null;
@@ -18,14 +18,16 @@ public class TabuRoutingEngine {
 
             for (String agentName : workingState.getRoutes().keySet()) {
                 List<Point> route = workingState.getRoutes().get(agentName);
-                int lockedCount = lockedPrefixLength.getOrDefault(agentName, 0);
+
+                // CRITICAL FIX 1: Always lock at least index 0 (The Depot / Current Location)
+                int lockedCount = Math.max(1, lockedPrefixLength.getOrDefault(agentName, 0));
 
                 // Check Capacity
                 int currentLoad = route.stream().mapToInt(p -> directory.containsKey(p) ? directory.get(p).getDemand() : 0).sum();
                 if (currentLoad + newParcel.getDemand() > capacities.getOrDefault(agentName, 5)) continue;
 
                 // Test insertions AFTER the locked buffer
-                for (int i = Math.max(1, lockedCount); i <= route.size(); i++) {
+                for (int i = lockedCount; i <= route.size(); i++) {
                     Point prev = route.get(i - 1);
                     Point next = (i == route.size()) ? prev : route.get(i);
                     double cost = prev.distance(newParcel.getDestination()) + newParcel.getDestination().distance(next) - prev.distance(next);
@@ -37,15 +39,22 @@ public class TabuRoutingEngine {
                     }
                 }
             }
-            if (bestAgent != null) workingState.insertNode(bestAgent, bestIndex, newParcel.getDestination());
+            if (bestAgent != null) {
+                workingState.insertNode(bestAgent, bestIndex, newParcel.getDestination());
+            } else {
+                System.err.println("TabuEngine Warning: No capacity found for dynamic parcel " + newParcel.getId());
+            }
         }
 
         // PHASE 2: Tabu Search Optimization Loop (Intra-route 2-Opt)
-        // We only swap nodes that occur AFTER the locked prefix to prevent breaking live physical driving.
         for (int iter = 0; iter < 1000; iter++) {
             for (String agent : workingState.getRoutes().keySet()) {
                 List<Point> r = workingState.getRoutes().get(agent);
-                int locked = lockedPrefixLength.getOrDefault(agent, 0);
+
+                // CRITICAL FIX 2: Ensure 'locked' is at least 1 so 'i' is never 0.
+                // This prevents r.get(i-1) from becoming r.get(-1) which crashes the system!
+                int locked = Math.max(1, lockedPrefixLength.getOrDefault(agent, 0));
+
                 if (r.size() - locked < 3) continue; // Not enough unlocked nodes to swap
 
                 // Simple 2-opt swap test

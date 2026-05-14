@@ -17,13 +17,34 @@ public class DeliveryAgent extends Agent {
     private Point currentLocation = new Point(50, 50);
     private List<Point> remainingStops = new ArrayList<>();
 
-    // --- Restored Capacity Variables ---
     private int maxCapacity = 5;
     private int freeCapacity = 5;
 
     @Override
     protected void setup() {
-        System.out.println(getLocalName() + " active and awaiting ghost routes.");
+        Object[] args = getArguments();
+        boolean showGui = false;
+
+        if (args != null && args.length > 0) {
+            String[] parts = args[0].toString().split(",");
+            currentLocation = new Point(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+            int initCap = Integer.parseInt(parts[2]);
+
+            // Check if MRA requested the Capacity GUI
+            if (args.length > 1 && args[1].toString().equals("SHOW_GUI")) {
+                showGui = true;
+            } else {
+                updateCapacity(initCap);
+            }
+        }
+
+        if (showGui) {
+            System.out.println(getLocalName() + " popping up GUI for capacity...");
+            java.awt.EventQueue.invokeLater(() -> {
+                DeliveryAgentGui gui = new DeliveryAgentGui(this);
+                gui.setVisible(true);
+            });
+        }
 
         // Asynchronous Movement Simulator (Never stops)
         addBehaviour(new TickerBehaviour(this, 400) {
@@ -54,36 +75,29 @@ public class DeliveryAgent extends Agent {
             }
         });
 
-        // Listen for Ghost Routes without freezing!
+        // Listen for Ghost Routes
         addBehaviour(new CyclicBehaviour() {
             @Override
             public void action() {
                 MessageTemplate mt = MessageTemplate.MatchConversationId(CID_ROUTE);
                 ACLMessage msg = receive(mt);
                 if (msg != null) {
-                    String content = msg.getContent().substring(10); // Strip PREFIX
+                    String content = msg.getContent().substring(10);
                     String[] coords = content.split(",");
                     List<Point> newRoute = new ArrayList<>();
                     for (String c : coords) {
                         String[] xy = c.split(":");
                         newRoute.add(new Point(Integer.parseInt(xy[0]), Integer.parseInt(xy[1])));
                     }
-
-                    // Seamlessly replace stops! The DA won't flinch.
                     remainingStops = newRoute;
-                    System.out.println(getLocalName() + ": Received Ghost Update. Diverting smoothly.");
                 } else { block(); }
             }
         });
     }
 
-    // --- Restored Missing Method for GUI Compilation ---
     public void updateCapacity(int cap) {
         this.maxCapacity = cap;
         this.freeCapacity = cap;
-        System.out.println(getLocalName() + ": Capacity locked in at " + cap);
-
-        // Send capacity to MRA
         ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
         msg.addReceiver(new jade.core.AID("MRA", jade.core.AID.ISLOCALNAME));
         msg.setConversationId("vrp-capacity");

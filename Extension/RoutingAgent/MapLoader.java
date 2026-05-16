@@ -1,7 +1,6 @@
 package RoutingAgent.Extension.RoutingAgent;
 
 import RoutingAgent.Extension.Solver.Parcel;
-
 import java.awt.Point;
 import java.io.BufferedReader;
 import java.io.FileReader;
@@ -12,12 +11,9 @@ import java.util.List;
 import java.util.Map;
 
 public class MapLoader {
-
-    // A simple container to hold the parsed data
     public static class ParsedData {
         public Point warehouse = new Point(50, 50);
         public List<Parcel> parcels = new ArrayList<>();
-        public Map<String, Integer> agents = new HashMap<>();
     }
 
     public static ParsedData load(String filePath) throws IOException {
@@ -40,17 +36,12 @@ public class MapLoader {
                             customerMap.put(Integer.parseInt(t[1]), new Point((int) Double.parseDouble(t[2]), (int) Double.parseDouble(t[3])));
                             break;
                         case "PARCEL":
-                            // Format: PARCEL 1 DEST 1
                             String pid = "P" + t[1];
                             int destId = Integer.parseInt(t[3]);
                             Point dest = customerMap.get(destId);
                             if (dest != null) {
                                 data.parcels.add(new Parcel(pid, dest.x, dest.y, 1));
                             }
-                            break;
-                        case "AGENT":
-                            // Format: AGENT 1 CAPACITY 5
-                            data.agents.put("DA" + t[1], Integer.parseInt(t[3]));
                             break;
                     }
                 } catch (Exception e) {

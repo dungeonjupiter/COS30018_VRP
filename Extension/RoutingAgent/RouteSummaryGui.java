@@ -1,5 +1,6 @@
 package RoutingAgent.Extension.RoutingAgent;
 
+import RoutingAgent.Extension.Solver.Parcel;
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
@@ -9,6 +10,7 @@ import java.util.Map;
 public class RouteSummaryGui extends JFrame {
     private final Map<String, List<Point>> initialRoutes;
     private final Map<String, List<Point>> actualRoutes;
+    private final Map<Point, Parcel> directory;
     private boolean showingInitial = false;
 
     private final SummaryPanel mapPanel;
@@ -18,12 +20,13 @@ public class RouteSummaryGui extends JFrame {
             new Color(253, 126, 20), new Color(111, 66, 193), new Color(23, 162, 184)
     };
 
-    public RouteSummaryGui(Map<String, List<Point>> initial, Map<String, List<Point>> actual) {
+    public RouteSummaryGui(Map<String, List<Point>> initial, Map<String, List<Point>> actual, Map<Point, Parcel> directory) {
         super("End of Day Route Summary");
         this.initialRoutes = initial;
         this.actualRoutes = actual;
+        this.directory = directory;
 
-        setSize(750, 750);
+        setSize(900, 800); // Widened to accommodate the shifted map
         setLayout(new BorderLayout());
 
         mapPanel = new SummaryPanel();
@@ -31,36 +34,53 @@ public class RouteSummaryGui extends JFrame {
         add(mapPanel, BorderLayout.CENTER);
 
         JPanel controlPanel = new JPanel();
-        controlPanel.setBackground(new Color(40, 40, 45));
-
-        JToggleButton toggleBtn = new JToggleButton("Currently Viewing: ACTUAL DRIVEN ROUTES (Final)");
-        toggleBtn.setFont(new Font("SansSerif", Font.BOLD, 14));
-        toggleBtn.setBackground(new Color(40, 167, 69));
+        controlPanel.setBackground(new Color(45, 45, 50));
+        JButton toggleBtn = new JButton("Currently Showing: Actual Driven Routes (Click to Toggle)");
+        toggleBtn.setBackground(new Color(0, 123, 255));
         toggleBtn.setForeground(Color.WHITE);
-        toggleBtn.setFocusPainted(false);
+        toggleBtn.setFont(new Font("SansSerif", Font.BOLD, 14));
 
         toggleBtn.addActionListener(e -> {
             showingInitial = !showingInitial;
             if (showingInitial) {
-                toggleBtn.setText("Currently Viewing: PHASE 1 PLANNED ROUTES");
-                toggleBtn.setBackground(new Color(0, 123, 255));
+                toggleBtn.setText("Currently Showing: Initial Planned Routes (Click to Toggle)");
+                toggleBtn.setBackground(new Color(253, 126, 20));
             } else {
-                toggleBtn.setText("Currently Viewing: ACTUAL DRIVEN ROUTES (Final)");
-                toggleBtn.setBackground(new Color(40, 167, 69));
+                toggleBtn.setText("Currently Showing: Actual Driven Routes (Click to Toggle)");
+                toggleBtn.setBackground(new Color(0, 123, 255));
             }
             mapPanel.repaint();
         });
 
         controlPanel.add(toggleBtn);
-        add(controlPanel, BorderLayout.NORTH);
+        add(controlPanel, BorderLayout.SOUTH);
 
         setLocationRelativeTo(null);
     }
 
     private class SummaryPanel extends JPanel {
-        private final int SCALE = 6;
-        private final int PADDING = 20;
         private final Point depot = new Point(50, 50);
+        // THE FIX: Separate X and Y offsets. Shifted X 220 pixels right to clear the legend.
+        private static final int OFFSET_X = 220;
+        private static final int OFFSET_Y = 60;
+        private static final int SCALE = 6;
+
+        private List<Point> smoothActualRoute(List<Point> rawGps) {
+            if (rawGps == null || rawGps.isEmpty()) return rawGps;
+            List<Point> smoothed = new ArrayList<>();
+            smoothed.add(rawGps.get(0));
+
+            for (int i = 1; i < rawGps.size() - 1; i++) {
+                Point p = rawGps.get(i);
+                if (p.equals(depot) || (directory != null && directory.containsKey(p))) {
+                    if (!smoothed.get(smoothed.size() - 1).equals(p)) smoothed.add(p);
+                }
+            }
+
+            Point last = rawGps.get(rawGps.size() - 1);
+            if (!smoothed.get(smoothed.size() - 1).equals(last)) smoothed.add(last);
+            return smoothed;
+        }
 
         @Override
         protected void paintComponent(Graphics g) {
@@ -68,103 +88,103 @@ public class RouteSummaryGui extends JFrame {
             Graphics2D g2d = (Graphics2D) g;
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            // 1. Draw Grid
-            g2d.setColor(new Color(50, 50, 55));
-            for (int i = 0; i <= 100; i += 10) {
-                g2d.drawLine(PADDING, (i * SCALE) + PADDING, (100 * SCALE) + PADDING, (i * SCALE) + PADDING);
-                g2d.drawLine((i * SCALE) + PADDING, PADDING, (i * SCALE) + PADDING, (100 * SCALE) + PADDING);
-            }
+            drawGridAndDepot(g2d);
+            drawLegend(g2d);
 
-            // 2. Draw Depot
-            g2d.setColor(Color.WHITE);
-            int dX = (depot.x * SCALE) + PADDING, dY = (depot.y * SCALE) + PADDING;
-            g2d.fillRect(dX - 10, dY - 10, 20, 20);
-            g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
-            g2d.drawString("WAREHOUSE", dX - 35, dY - 15);
+            Map<String, List<Point>> activeMap = showingInitial ? initialRoutes : actualRoutes;
+            if (activeMap == null || activeMap.isEmpty()) return;
 
-            Map<String, List<Point>> dataToDraw = showingInitial ? initialRoutes : actualRoutes;
             int colorIndex = 0;
+            for (String name : activeMap.keySet()) {
+                Color agentColor = agentColors[colorIndex % agentColors.length];
+                List<Point> path = activeMap.get(name);
+                if (!showingInitial) path = smoothActualRoute(path);
 
-            for (Map.Entry<String, List<Point>> entry : dataToDraw.entrySet()) {
-                String name = entry.getKey();
-                List<Point> rawPath = entry.getValue();
-                if (rawPath == null || rawPath.isEmpty()) continue;
-
-                // --- THE FIX IS HERE ---
-                // We removed the "!showingInitial" restriction.
-                // Now, if ANY route (Planned or Actual) doesn't end at the Warehouse, the visualizer forcefully bridges the gap!
-                List<Point> path = new ArrayList<>(rawPath);
-                if (!path.get(path.size() - 1).equals(depot)) {
-                    path.add(new Point(depot));
+                if (path == null || path.isEmpty()) {
+                    colorIndex++;
+                    continue;
                 }
 
-                Color agentColor = agentColors[colorIndex % agentColors.length];
                 g2d.setColor(agentColor);
+                g2d.setStroke(new BasicStroke(2.5f));
 
-                int depotVisits = 0;
-                boolean isDynamicSegment = false;
-
-                int prevX = (path.get(0).x * SCALE) + PADDING;
-                int prevY = (path.get(0).y * SCALE) + PADDING;
+                int prevX = (path.get(0).x * SCALE) + OFFSET_X;
+                int prevY = (path.get(0).y * SCALE) + OFFSET_Y;
 
                 for (int i = 1; i < path.size(); i++) {
-                    Point prevNode = path.get(i - 1);
                     Point currNode = path.get(i);
+                    int currX = (currNode.x * SCALE) + OFFSET_X;
+                    int currY = (currNode.y * SCALE) + OFFSET_Y;
 
-                    int currX = (currNode.x * SCALE) + PADDING;
-                    int currY = (currNode.y * SCALE) + PADDING;
-
-                    // --- INTELLIGENT STROKE LOGIC ---
-                    if (!showingInitial) {
-                        if (currNode.equals(depot) && !prevNode.equals(depot)) {
-                            depotVisits++;
-                        }
-                        if (depotVisits >= 1 && !currNode.equals(depot)) {
-                            isDynamicSegment = true;
-                        }
-
-                        if (isDynamicSegment) {
-                            g2d.setStroke(new BasicStroke(3, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0, new float[]{8}, 0));
-                        } else {
-                            g2d.setStroke(new BasicStroke(3));
-                        }
-                    } else {
-                        // Planned Phase 1 routes get a clean dashed line
-                        g2d.setStroke(new BasicStroke(2, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 0, new float[]{5}, 0));
-                    }
-
-                    // Draw the segment
                     g2d.drawLine(prevX, prevY, currX, currY);
 
-                    // --- DIRECTIONAL ARROW LOGIC ---
-                    boolean drawArrow = false;
-                    if (showingInitial) {
-                        drawArrow = true;
-                    } else {
-                        if (i % 15 == 0 || i == path.size() - 1) {
-                            drawArrow = true;
-                        }
-                    }
+                    boolean isStop = (directory != null && directory.containsKey(currNode));
+                    boolean isEnd = (i == path.size() - 1);
 
-                    if (drawArrow && (currX != prevX || currY != prevY)) {
+                    if (isStop || (!currNode.equals(depot) && showingInitial)) {
+                        if (currX != prevX || currY != prevY) drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
+                        g2d.fillOval(currX - 7, currY - 7, 14, 14);
+                        g2d.setColor(Color.WHITE);
+                        g2d.fillOval(currX - 2, currY - 2, 4, 4);
+                        g2d.setColor(agentColor);
+                    } else if (isEnd) {
                         drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
                     }
-
-                    // Draw circles for planned customer nodes
-                    if (!currNode.equals(depot) && showingInitial) {
-                        g2d.fillOval(currX - 5, currY - 5, 10, 10);
-                    }
-
                     prevX = currX;
                     prevY = currY;
                 }
 
-                // Name Tag
+                Point furthestNode = path.get(0);
+                double maxDist = -1;
+                for (Point p : path) {
+                    double dist = p.distance(depot);
+                    if (dist > maxDist) {
+                        maxDist = dist;
+                        furthestNode = p;
+                    }
+                }
+
                 g2d.setColor(Color.WHITE);
                 g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
-                g2d.drawString(name, (path.get(0).x * SCALE) + PADDING - 10, (path.get(0).y * SCALE) + PADDING - 15);
+                g2d.drawString(name, (furthestNode.x * SCALE) + OFFSET_X - 10, (furthestNode.y * SCALE) + OFFSET_Y - 15);
 
                 colorIndex++;
+            }
+        }
+
+        private void drawLegend(Graphics2D g2d) {
+            Map<String, List<Point>> activeMap = showingInitial ? initialRoutes : actualRoutes;
+            int numAgents = (activeMap != null) ? activeMap.size() : 0;
+
+            // Draw Legend Background Box
+            int boxHeight = 50 + (numAgents * 20);
+            g2d.setColor(new Color(20, 20, 25, 210));
+            g2d.fillRoundRect(10, 10, 180, boxHeight, 15, 15);
+            g2d.setColor(new Color(80, 80, 90));
+            g2d.drawRoundRect(10, 10, 180, boxHeight, 15, 15);
+
+            int ly = 30;
+            g2d.setColor(Color.WHITE);
+            g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
+            g2d.drawString("SUMMARY LEGEND:", 20, ly);
+            ly += 20;
+
+            g2d.setColor(Color.RED);
+            g2d.fillRect(20, ly - 9, 10, 10);
+            g2d.setColor(Color.WHITE);
+            g2d.setFont(new Font("SansSerif", Font.PLAIN, 12));
+            g2d.drawString("Warehouse (50,50)", 35, ly);
+
+            if (activeMap != null) {
+                int idx = 0;
+                for (String name : activeMap.keySet()) {
+                    ly += 20;
+                    g2d.setColor(agentColors[idx % agentColors.length]);
+                    g2d.fillRect(20, ly - 9, 10, 10);
+                    g2d.setColor(Color.WHITE);
+                    g2d.drawString(name + " Route", 35, ly);
+                    idx++;
+                }
             }
         }
 
@@ -177,9 +197,21 @@ public class RouteSummaryGui extends JFrame {
             int y4 = (int) (y2 - arrowSize * Math.sin(angle + Math.PI / 6));
 
             g2d.setColor(color);
-            g2d.fillPolygon(new int[]{x2, x3, x4}, new int[]{y2, y3, y4}, 3);
+            Polygon arrow = new Polygon();
+            arrow.addPoint(x2, y2);
+            arrow.addPoint(x3, y3);
+            arrow.addPoint(x4, y4);
+            g2d.fillPolygon(arrow);
+        }
+
+        private void drawGridAndDepot(Graphics2D g2d) {
+            g2d.setColor(new Color(50, 50, 55));
+            for (int i = 0; i <= 100; i += 10) {
+                g2d.drawLine(OFFSET_X, OFFSET_Y + (i * SCALE), OFFSET_X + (100 * SCALE), OFFSET_Y + (i * SCALE));
+                g2d.drawLine(OFFSET_X + (i * SCALE), OFFSET_Y, OFFSET_X + (i * SCALE), OFFSET_Y + (100 * SCALE));
+            }
+            g2d.setColor(Color.RED);
+            g2d.fillRect((depot.x * SCALE) + OFFSET_X - 10, (depot.y * SCALE) + OFFSET_Y - 10, 20, 20);
         }
     }
-
-    public void display() { setVisible(true); }
 }

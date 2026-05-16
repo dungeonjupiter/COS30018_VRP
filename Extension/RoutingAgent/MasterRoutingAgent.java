@@ -14,50 +14,43 @@ import java.util.concurrent.CompletableFuture;
 
 public class MasterRoutingAgent extends Agent {
 
-    // JADE Communication IDs
     public static final String CID_ROUTE = "vrp-route";
     public static final String CID_TRACKING = "vrp-tracking";
     public static final String CID_DONE = "vrp-done";
     public static final String CID_CAPACITY = "vrp-capacity";
     private static final String PREFIX_ROUTE = "ROUTE:";
 
-    // Architecture Components
     private MainWindow myGui;
     private final TabuRoutingEngine tabuEngine = new TabuRoutingEngine();
     private final List<AID> fleet = new ArrayList<>();
     private final Point depot = new Point(50, 50);
 
-    // Fleet & Map Metadata
     private final Map<String, Integer> fleetCapacities = new HashMap<>();
     public final Map<Point, Parcel> parcelDirectory = new HashMap<>();
 
-    // Live Tracking Data
     private final Map<String, Point> currentLocs = new HashMap<>();
     private final Map<String, List<Point>> actualDrivenRoutes = new HashMap<>();
     private final Map<String, List<Point>> remainingPaths = new HashMap<>();
     private final Set<String> activeDrivingAgents = new HashSet<>();
-
-    // Summary & Visuals Data
     private final Map<String, List<Point>> initialPlannedRoutes = new HashMap<>();
+    private final Set<Point> dynamicDestinations = new HashSet<>();
 
-    // State Flags
+    private List<Point> previewNodes = new ArrayList<>();
+    private RouteState plannedBaseState = null;
     private boolean isPhase2Active = false;
 
-    // Async Initialization Variables
     private List<Parcel> initParcels = new ArrayList<>();
     private int initTotalDemand = 0;
     private int initPendingAgents = 0;
-    private boolean isPhase1RandomInitializing = false;
+    private int backupCounter = 0;
 
     @Override
     protected void setup() {
         myGui = new MainWindow(this);
         myGui.setVisible(true);
-        myGui.log("System Status: Booted. Awaiting Phase 1 Initialization...");
+        myGui.log("System Booted. Select map source and Prepare Environment.");
 
-        // GPS Listener
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_TRACKING);
                 ACLMessage msg = receive(tpl);
@@ -66,9 +59,7 @@ public class MasterRoutingAgent extends Agent {
             }
         });
 
-        // Agent Done Listener
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_DONE);
                 ACLMessage msg = receive(tpl);
@@ -79,134 +70,160 @@ public class MasterRoutingAgent extends Agent {
             }
         });
 
-        // Async Capacity Configuration Listener
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_CAPACITY);
                 ACLMessage msg = receive(tpl);
                 if (msg != null) {
                     String name = msg.getSender().getLocalName();
-                    int cap = Integer.parseInt(msg.getContent().split(":")[1]);
-                    fleetCapacities.put(name, cap);
-                    myGui.log(name + " registered with capacity: " + cap);
+                    try {
+                        int cap = Integer.parseInt(msg.getContent().split(":")[1]);
+                        fleetCapacities.put(name, cap);
+                        myGui.log(name + " capacity registered: " + cap);
 
-                    // Check if we are waiting for user inputs during random initialization
-                    if (isPhase1RandomInitializing) {
-                        initPendingAgents--;
-                        if (initPendingAgents <= 0) {
-                            isPhase1RandomInitializing = false;
-                            finalizePhase1Initialization(); // Continue once all GUIs are done
+                        if (initPendingAgents > 0) {
+                            initPendingAgents--;
+                            if (initPendingAgents <= 0) checkCapacityLoop();
                         }
-                    }
-                } else { block(); }
+                    } catch (Exception e) {}
+                } else block();
             }
         });
     }
 
-    // ==========================================
-    // PHASE 1: ASYNCHRONOUS INITIALIZATION
-    // ==========================================
-    public void initializeSystem(int numCustomers, int numAgents, String mapFilePath) {
-        myGui.log("--- Initializing Phase 1 ---");
+    public void previewMap(String path) {
+        try {
+            MapLoader.ParsedData mapData = MapLoader.load(path);
+            previewNodes.clear();
+            for (Parcel p : mapData.parcels) previewNodes.add(p.getDestination());
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+            myGui.log("Map preview loaded successfully.");
+        } catch (Exception e) {}
+    }
+
+    public void clearPreview() {
+        previewNodes.clear();
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+        myGui.log("Map cleared. Reverted to random generation.");
+    }
+
+    public void prepareEnvironment(int numCustomers, int numAgents, String mapFilePath) {
+        myGui.log("--- Preparing Agents & Environment ---");
         initParcels.clear();
         initTotalDemand = 0;
+        previewNodes.clear();
+        dynamicDestinations.clear();
 
         if (!mapFilePath.equals("RANDOM")) {
-            // MAP LOADER LOGIC
             try {
                 MapLoader.ParsedData mapData = MapLoader.load(mapFilePath);
-
+                backupCounter = numAgents;
                 for (Parcel p : mapData.parcels) {
                     initParcels.add(p);
                     parcelDirectory.put(p.getDestination(), p);
                     initTotalDemand += p.getDemand();
+                    previewNodes.add(p.getDestination());
                 }
 
-                for (Map.Entry<String, Integer> entry : mapData.agents.entrySet()) {
-                    String name = entry.getKey();
-                    int cap = entry.getValue();
-                    spawnDynamicAgent(name, mapData.warehouse.x, mapData.warehouse.y, cap, false);
-                    fleetCapacities.put(name, cap);
+                initPendingAgents = numAgents;
+                for (int i = 1; i <= numAgents; i++) {
+                    String name = "DA" + i;
+                    spawnDynamicAgent(name, mapData.warehouse.x, mapData.warehouse.y, 5, true);
                     activeDrivingAgents.add(name);
+                    currentLocs.put(name, mapData.warehouse);
                 }
-
-                myGui.log("Map Loaded: " + mapData.parcels.size() + " customers, " + mapData.agents.size() + " agents.");
-                finalizePhase1Initialization(); // Proceed to Math Optimization instantly
-
-            } catch (Exception e) {
-                myGui.log("Failed to parse map file: " + e.getMessage());
-                e.printStackTrace();
-            }
-
+                myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+            } catch (Exception e) {}
         } else {
-            // RANDOM GENERATOR LOGIC
-            isPhase1RandomInitializing = true;
-            Random rand = new Random();
-            for (int i = 1; i <= numCustomers; i++) {
-                Parcel p = new Parcel("P" + i, rand.nextInt(100), rand.nextInt(100), 1);
-                initParcels.add(p);
-                parcelDirectory.put(p.getDestination(), p);
-                initTotalDemand += p.getDemand();
-            }
-            myGui.log("Generated " + numCustomers + " random customers. Total Demand: " + initTotalDemand);
+            int cols = (int) Math.ceil(Math.sqrt(numCustomers));
+            int rows = (int) Math.ceil((double) numCustomers / cols);
+            int cellW = 100 / cols;
+            int cellH = 100 / rows;
 
-            // Spawn agents and wait for user to configure capacity via GUI
+            Random rand = new Random();
+            backupCounter = numAgents;
+            int count = 1;
+
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    if (count > numCustomers) break;
+                    int x = (c * cellW) + rand.nextInt(Math.max(1, cellW - 5));
+                    int y = (r * cellH) + rand.nextInt(Math.max(1, cellH - 5));
+
+                    Parcel p = new Parcel("P" + count, x, y, 1);
+                    initParcels.add(p);
+                    parcelDirectory.put(p.getDestination(), p);
+                    initTotalDemand += p.getDemand();
+                    previewNodes.add(p.getDestination());
+                    count++;
+                }
+            }
+
             initPendingAgents = numAgents;
-            myGui.log("Awaiting capacity configuration for " + numAgents + " agents via GUI...");
             for (int i = 1; i <= numAgents; i++) {
                 String name = "DA" + i;
-                spawnDynamicAgent(name, 50, 50, 5, true); // True triggers the DeliveryAgentGui
+                spawnDynamicAgent(name, 50, 50, 5, true);
                 activeDrivingAgents.add(name);
+                currentLocs.put(name, depot);
             }
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
         }
     }
 
-    private void finalizePhase1Initialization() {
+    private void checkCapacityLoop() {
         int currentCapacity = fleetCapacities.values().stream().mapToInt(Integer::intValue).sum();
-
-        // Backup Agent Logic
-        int backupCount = fleetCapacities.size();
-        while (currentCapacity < initTotalDemand) {
-            backupCount++;
-            String backupName = "DA" + backupCount;
-            myGui.log("Alert: Insufficient capacity. Deploying Backup Agent " + backupName + " (Cap: 5)");
-            spawnDynamicAgent(backupName, 50, 50, 5, false); // No GUI for backups
-            fleetCapacities.put(backupName, 5);
+        if (currentCapacity < initTotalDemand) {
+            backupCounter++;
+            String backupName = "DA" + backupCounter;
+            myGui.log("Alert: Insufficient capacity. Spawning Backup: " + backupName);
+            spawnDynamicAgent(backupName, 50, 50, 5, true);
             activeDrivingAgents.add(backupName);
-            currentCapacity += 5;
+            currentLocs.put(backupName, depot);
+            initPendingAgents = 1;
+        } else {
+            myGui.log("Capacity check passed. Click '2. Plot Routes'.");
+            myGui.enablePlotting();
         }
+    }
 
-        // Run Initial Optimization
+    public void plotRoutes() {
+        myGui.log("--- Plotting Routes via Tabu Solver ---");
         RouteState baseState = new RouteState();
         for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
         for (Parcel p : initParcels) {
-            baseState = tabuEngine.optimize(baseState, p, fleetCapacities, parcelDirectory, new HashMap<>());
+            baseState = tabuEngine.optimize(baseState, p, fleetCapacities, parcelDirectory, new HashMap<>(), new HashSet<>());
         }
-
-        // Save initial routes for Bold Line drawing in GUI
+        previewNodes.clear();
         for (Map.Entry<String, List<Point>> entry : baseState.getRoutes().entrySet()) {
             initialPlannedRoutes.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            remainingPaths.put(entry.getKey(), entry.getValue());
         }
+        plannedBaseState = baseState;
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+        myGui.log("Routes plotted successfully. Click '3. Dispatch Fleet'.");
+        myGui.enableDispatch();
+    }
 
-        dispatchRoutes(baseState, null);
+    public void dispatchFleet() {
+        myGui.log("--- Dispatching Fleet ---");
+        dispatchRoutes(plannedBaseState, null);
         isPhase2Active = true;
         myGui.setPhase2Enabled(true);
-        myGui.log("Phase 1 Complete. Fleet dispatched.");
+        myGui.log("Fleet has been dispatched and is now moving.");
     }
 
     // ==========================================
-    // PHASE 2: DYNAMIC REROUTING
+    // DYNAMIC INJECTION
     // ==========================================
     public void injectDynamicParcel(Parcel newParcel) {
         if (!isPhase2Active) return;
         parcelDirectory.put(newParcel.getDestination(), newParcel);
-        myGui.log("Dynamic Request: " + newParcel.getId() + " at " + newParcel.getDestination());
+        dynamicDestinations.add(newParcel.getDestination());
+        myGui.log("Dynamic Request: " + newParcel.getId());
 
         RouteState snapshot = new RouteState();
         Map<String, Integer> lockedPrefixes = new HashMap<>();
 
-        // N+1 Buffer Lock Logic
         for (AID aid : fleet) {
             String name = aid.getLocalName();
             Point loc = currentLocs.getOrDefault(name, depot);
@@ -215,30 +232,62 @@ public class MasterRoutingAgent extends Agent {
             int lockCount = 0;
 
             if (!remaining.isEmpty()) {
-                snapshot.insertNode(name, 1, remaining.get(0));
-                lockCount = 1;
+                // THE INVENTORY LOCK FIX:
+                // Find where the truck next visits the depot.
+                // Everything before this visit is physically inside the truck's trunk!
+                int nextDepotIndex = remaining.indexOf(depot);
 
-                // If truck is very close to node 0, lock node 1 as well
-                if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
-                    snapshot.insertNode(name, 2, remaining.get(1));
-                    lockCount = 2;
+                if (nextDepotIndex == -1) {
+                    // No depot return in the route. The truck has ALL remaining boxes in its trunk.
+                    lockCount = remaining.size();
+                } else {
+                    // Lock the "manifest" of everything up to the next depot stop.
+                    // Anything AFTER the depot stop is fair game for the Standby Agent to steal.
+                    lockCount = nextDepotIndex;
                 }
 
-                for (int i = lockCount; i < remaining.size(); i++) {
+                // Safety: Always lock at least the immediate next node to prevent physical U-Turns
+                lockCount = Math.max(lockCount, 1);
+
+                // Safety: If extremely close to the next node, lock the one after it too
+                if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
+                    lockCount = Math.max(lockCount, 2);
+                }
+
+                // Rebuild the snapshot route for the math engine
+                for (int i = 0; i < remaining.size(); i++) {
                     snapshot.insertNode(name, i + 1, remaining.get(i));
                 }
             }
             lockedPrefixes.put(name, lockCount);
         }
 
-        // Asynchronous Ghost Math
-        CompletableFuture.supplyAsync(() -> tabuEngine.optimize(snapshot, newParcel, fleetCapacities, parcelDirectory, lockedPrefixes))
+        Set<Point> dynamicSnapshot = new HashSet<>(dynamicDestinations);
+        CompletableFuture.supplyAsync(() -> tabuEngine.optimize(snapshot, newParcel, fleetCapacities, parcelDirectory, lockedPrefixes, dynamicSnapshot))
                 .thenAccept(optimizedState -> addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
-                    public void action() {
-                        dispatchRoutes(optimizedState, newParcel);
-                        myGui.log("Optimization Complete: Route updated for " + newParcel.getId());
-                    }
+                    public void action() { dispatchRoutes(optimizedState, newParcel); }
                 }));
+    }
+
+    // ==========================================
+    // STANDBY AGENT DEPLOYMENT
+    // ==========================================
+    public void deployStandby(String name, int capacity) {
+        myGui.log("Deploying Standby Agent: " + name + " (Capacity: " + capacity + ")");
+        spawnDynamicAgent(name, depot.x, depot.y, capacity, false);
+
+        // Immediately register all metadata so UI updates seamlessly
+        fleetCapacities.put(name, capacity);
+        activeDrivingAgents.add(name);
+        currentLocs.put(name, depot);
+        remainingPaths.put(name, new ArrayList<>());
+
+        // Ensure it appears on the End of Day Summary even if it doesn't move
+        initialPlannedRoutes.put(name, new ArrayList<>(List.of(depot)));
+        actualDrivenRoutes.put(name, new ArrayList<>(List.of(depot)));
+
+        // Force a map repaint to show the new agent in the Tracker Legend
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
     }
 
     private void dispatchRoutes(RouteState state, Parcel dynamicParcel) {
@@ -248,23 +297,22 @@ public class MasterRoutingAgent extends Agent {
             if (mathNodes == null || mathNodes.size() < 2) continue;
 
             List<Point> physicalStops = new ArrayList<>();
-            boolean pickedUpAtDepot = false;
+            boolean hasInventoryForDynamic = false;
 
             for (int i = 1; i < mathNodes.size(); i++) {
                 Point p = mathNodes.get(i);
-                if (p.equals(depot)) { pickedUpAtDepot = true; physicalStops.add(p); continue; }
-
-                // Batch Pickup Logic: Go to warehouse if this parcel hasn't been picked up
-                if (dynamicParcel != null && p.equals(dynamicParcel.getDestination()) && !pickedUpAtDepot) {
-                    physicalStops.add(new Point(depot));
-                    pickedUpAtDepot = true;
+                if (p.equals(depot)) {
+                    hasInventoryForDynamic = true;
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(p);
+                    continue;
+                }
+                if (dynamicDestinations.contains(p) && !hasInventoryForDynamic) {
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
+                    hasInventoryForDynamic = true;
                 }
                 physicalStops.add(p);
             }
-
-            if (!physicalStops.isEmpty() && !physicalStops.get(physicalStops.size()-1).equals(depot)) {
-                physicalStops.add(new Point(depot));
-            }
+            if (!physicalStops.isEmpty() && !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
 
             StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
             for (int i = 0; i < physicalStops.size(); i++) {
@@ -299,29 +347,17 @@ public class MasterRoutingAgent extends Agent {
                 }
             }
             remainingPaths.put(agentName, rem);
-            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities);
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
         } catch (Exception e) {}
     }
 
-    // Default spawn (No GUI)
-    public void spawnDynamicAgent(String name, int startX, int startY, int capacity) {
-        spawnDynamicAgent(name, startX, startY, capacity, false);
-    }
-
-    // Overloaded spawn (Optional GUI trigger)
     public void spawnDynamicAgent(String name, int startX, int startY, int capacity, boolean showGui) {
         try {
-            Object[] args = showGui
-                    ? new Object[]{startX + "," + startY + "," + capacity, "SHOW_GUI"}
-                    : new Object[]{startX + "," + startY + "," + capacity};
-
+            Object[] args = showGui ? new Object[]{startX + "," + startY + "," + capacity, "SHOW_GUI"} : new Object[]{startX + "," + startY + "," + capacity};
             jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
             ac.start();
             fleet.add(new AID(name, AID.ISLOCALNAME));
-        } catch (Exception e) {
-            e.printStackTrace();
-            myGui.log("Error spawning agent: " + name);
-        }
+        } catch (Exception e) {}
     }
 
     public Map<String, List<Point>> getInitialPlannedRoutes() { return initialPlannedRoutes; }

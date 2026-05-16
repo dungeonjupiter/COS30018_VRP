@@ -1,0 +1,22 @@
+# Clustered Zones Map - 6 Customers, 6 Parcels
+# Fleet configuration is handled via GUI
+
+WAREHOUSE 50 50
+
+# --- Cluster A (Top Left) ---
+CUSTOMER 1 15 15
+CUSTOMER 2 20 15
+CUSTOMER 3 15 20
+
+# --- Cluster B (Bottom Right) ---
+CUSTOMER 4 80 80
+CUSTOMER 5 85 85
+CUSTOMER 6 80 85
+
+# --- Parcels ---
+PARCEL 1 DEST 1
+PARCEL 2 DEST 2
+PARCEL 3 DEST 3
+PARCEL 4 DEST 4
+PARCEL 5 DEST 5
+PARCEL 6 DEST 6

@@ -1,432 +1,365 @@
 package RoutingAgent.Extension.RoutingAgent;
 
-import RoutingAgent.Extension.Solver.ALNSEngine;
-import RoutingAgent.Extension.Solver.GreedyEngine;
 import RoutingAgent.Extension.Solver.Parcel;
 import RoutingAgent.Extension.Solver.RouteState;
+import RoutingAgent.Extension.Solver.TabuRoutingEngine;
 import jade.core.Agent;
 import jade.core.AID;
-import jade.core.behaviours.Behaviour;
 import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
+
 import java.awt.Point;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public class MasterRoutingAgent extends Agent {
 
-    public static final String CID_FREEZE = "vrp-freeze";
     public static final String CID_ROUTE = "vrp-route";
-    public static final String FREEZE_CONTENT = "FREEZE";
-    private static final String PREFIX_STATUS = "STATUS:";
+    public static final String CID_TRACKING = "vrp-tracking";
+    public static final String CID_DONE = "vrp-done";
+    public static final String CID_CAPACITY = "vrp-capacity";
     private static final String PREFIX_ROUTE = "ROUTE:";
 
-    private MRAGui myGui;
-    private MapTrackerGui trackerGui;
-    private final GreedyEngine greedyEngine = new GreedyEngine();
-    private final ALNSEngine alnsEngine = new ALNSEngine();
+    private MainWindow myGui;
+    private final TabuRoutingEngine tabuEngine = new TabuRoutingEngine();
     private final List<AID> fleet = new ArrayList<>();
-    private Point depot = new Point(50, 50);
-    private long freezeTimeoutMs = 8000L;
-    private long alnsTimeMs = 1500L;
+    private final Point depot = new Point(50, 50);
 
-    // Capacity & Tracking Variables
-    private int expectedInitialAgents = 0;
-    private int capacityReportedCount = 0;
-    private int totalSystemDemand = 0;
-    private List<Parcel> pendingInitialParcels = new ArrayList<>();
-    private Map<String, Integer> fleetCapacities = new HashMap<>();
+    private final Map<String, Integer> fleetCapacities = new HashMap<>();
     public final Map<Point, Parcel> parcelDirectory = new HashMap<>();
-    private int backupCounter = 1;
 
-    // --- AUTONOMOUS & PHYSICAL TRACKING ---
-    private final Set<String> activeDrivingAgents = new HashSet<>();
-    private boolean summaryHasBeenShown = false;
-    private final Set<Point> inVanParcels = new HashSet<>();
-    private final Set<Point> dynamicTargetsThisRound = new HashSet<>();
-
-    // Flight Recorder Memory
-    private final Map<String, List<Point>> initialPlannedRoutes = new HashMap<>();
+    private final Map<String, Point> currentLocs = new HashMap<>();
     private final Map<String, List<Point>> actualDrivenRoutes = new HashMap<>();
+    private final Map<String, List<Point>> remainingPaths = new HashMap<>();
+    private final Set<String> activeDrivingAgents = new HashSet<>();
+    private final Map<String, List<Point>> initialPlannedRoutes = new HashMap<>();
+    private final Set<Point> dynamicDestinations = new HashSet<>();
+
+    private List<Point> previewNodes = new ArrayList<>();
+    private RouteState plannedBaseState = null;
+    private boolean isPhase2Active = false;
+
+    private List<Parcel> initParcels = new ArrayList<>();
+    private int initTotalDemand = 0;
+    private int initPendingAgents = 0;
+    private int backupCounter = 0;
 
     @Override
     protected void setup() {
-        System.out.println("MRA online. Depot (" + depot.x + "," + depot.y + ").");
+        myGui = new MainWindow(this);
+        myGui.setVisible(true);
+        myGui.log("System Booted. Select map source and Prepare Environment.");
 
-        myGui = new MRAGui(this);
-        myGui.display();
-
-        // --- Listen for 'End of Shift' Pings ---
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
             public void action() {
-                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-done");
+                MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_TRACKING);
+                ACLMessage msg = receive(tpl);
+                if (msg != null) processGpsPing(msg.getSender().getLocalName(), msg.getContent());
+                else block();
+            }
+        });
+
+        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
+            public void action() {
+                MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_DONE);
                 ACLMessage msg = receive(tpl);
                 if (msg != null) {
                     activeDrivingAgents.remove(msg.getSender().getLocalName());
-
-                    if (activeDrivingAgents.isEmpty() && !summaryHasBeenShown) {
-                        System.out.println("\n*** MRA: ALL AGENTS HAVE RETURNED TO DEPOT! Launching End-of-Day Summary! ***");
-                        summaryHasBeenShown = true;
-                        RouteSummaryGui summaryGui = new RouteSummaryGui(initialPlannedRoutes, actualDrivenRoutes);
-                        summaryGui.display();
-                    }
-                } else { block(); }
+                    if (activeDrivingAgents.isEmpty()) myGui.enableSummary();
+                } else block();
             }
         });
 
-        // Listen for Capacity inputs from DeliveryAgent GUIs
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
             public void action() {
-                MessageTemplate mt = MessageTemplate.MatchConversationId("vrp-capacity");
-                ACLMessage msg = receive(mt);
-                if (msg != null) {
-                    String content = msg.getContent();
-                    if (content != null && content.startsWith("CAPACITY:")) {
-                        int cap = Integer.parseInt(content.substring(9).trim());
-                        fleetCapacities.put(msg.getSender().getLocalName(), cap);
-                        capacityReportedCount++;
-                        if (capacityReportedCount == expectedInitialAgents) checkCapacitiesAndRunSolver();
-                    }
-                } else { block(); }
-            }
-        });
-
-        // Listen for GPS Pings
-        addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
-            @Override
-            public void action() {
-                MessageTemplate tpl = MessageTemplate.MatchConversationId("vrp-tracking");
+                MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_CAPACITY);
                 ACLMessage msg = receive(tpl);
                 if (msg != null) {
-                    processGpsPing(msg.getSender().getLocalName(), msg.getContent());
-                } else { block(); }
+                    String name = msg.getSender().getLocalName();
+                    try {
+                        int cap = Integer.parseInt(msg.getContent().split(":")[1]);
+                        fleetCapacities.put(name, cap);
+                        myGui.log(name + " capacity registered: " + cap);
+
+                        if (initPendingAgents > 0) {
+                            initPendingAgents--;
+                            if (initPendingAgents <= 0) checkCapacityLoop();
+                        }
+                    } catch (Exception e) {}
+                } else block();
             }
         });
     }
 
-    public void spawnInitialAgent(String name, int startX, int startY) {
+    public void previewMap(String path) {
         try {
-            Object[] args = new Object[]{startX + "," + startY};
-            jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
-            ac.start();
-            fleet.add(new AID(name, AID.ISLOCALNAME));
-        } catch (Exception e) { e.printStackTrace(); }
+            MapLoader.ParsedData mapData = MapLoader.load(path);
+            previewNodes.clear();
+            for (Parcel p : mapData.parcels) previewNodes.add(p.getDestination());
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+            myGui.log("Map preview loaded successfully.");
+        } catch (Exception e) {}
     }
 
-    public void initializeSystem(final int numCustomers, final int numAgents, final String filePath) {
-        System.out.println("\n--- MRA: PHASE 1A - GENERATING MAP & SPAWNING AGENTS ---");
-        pendingInitialParcels.clear();
-        fleetCapacities.clear();
-        parcelDirectory.clear();
-        initialPlannedRoutes.clear();
-        actualDrivenRoutes.clear();
-        capacityReportedCount = 0;
-        totalSystemDemand = 0;
-        expectedInitialAgents = numAgents;
+    public void clearPreview() {
+        previewNodes.clear();
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+        myGui.log("Map cleared. Reverted to random generation.");
+    }
 
-        if (filePath.equals("RANDOM")) {
-            java.util.Random rand = new java.util.Random();
-            for (int i = 1; i <= numCustomers; i++) {
-                Parcel p = new Parcel("P" + i, rand.nextInt(100), rand.nextInt(100), 1);
-                pendingInitialParcels.add(p);
-                parcelDirectory.put(p.getDestination(), p);
-                totalSystemDemand += p.getDemand();
-            }
-        } else {
+    public void prepareEnvironment(int numCustomers, int numAgents, String mapFilePath) {
+        myGui.log("--- Preparing Agents & Environment ---");
+        initParcels.clear();
+        initTotalDemand = 0;
+        previewNodes.clear();
+        dynamicDestinations.clear();
+
+        if (!mapFilePath.equals("RANDOM")) {
             try {
-                java.util.List<String> lines = java.nio.file.Files.readAllLines(new java.io.File(filePath).toPath());
-                int pCount = 1;
-                for (String line : lines) {
-                    if (line.trim().isEmpty()) continue;
-                    String[] parts = line.split(",");
-                    if (parts.length >= 2) {
-                        int demand = parts.length >= 3 ? Integer.parseInt(parts[2].trim()) : 1;
-                        Parcel p = new Parcel("F" + pCount++, Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()), demand);
-                        pendingInitialParcels.add(p);
-                        parcelDirectory.put(p.getDestination(), p);
-                        totalSystemDemand += p.getDemand();
-                    }
+                MapLoader.ParsedData mapData = MapLoader.load(mapFilePath);
+                backupCounter = numAgents;
+                for (Parcel p : mapData.parcels) {
+                    initParcels.add(p);
+                    parcelDirectory.put(p.getDestination(), p);
+                    initTotalDemand += p.getDemand();
+                    previewNodes.add(p.getDestination());
                 }
-            } catch (Exception e) { System.err.println("MRA: Failed to parse file."); }
-        }
 
-        for (int i = 1; i <= numAgents; i++) spawnInitialAgent("DA" + i, depot.x, depot.y);
-    }
-
-    private void checkCapacitiesAndRunSolver() {
-        int totalCap = 0;
-        for (int cap : fleetCapacities.values()) totalCap += cap;
-
-        if (totalCap < totalSystemDemand) {
-            expectedInitialAgents++;
-            spawnInitialAgent("DA_Backup_" + backupCounter++, depot.x, depot.y);
+                initPendingAgents = numAgents;
+                for (int i = 1; i <= numAgents; i++) {
+                    String name = "DA" + i;
+                    spawnDynamicAgent(name, mapData.warehouse.x, mapData.warehouse.y, 5, true);
+                    activeDrivingAgents.add(name);
+                    currentLocs.put(name, mapData.warehouse);
+                }
+                myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+            } catch (Exception e) {}
         } else {
-            runInitialOptimizationPipeline();
+            int cols = (int) Math.ceil(Math.sqrt(numCustomers));
+            int rows = (int) Math.ceil((double) numCustomers / cols);
+            int cellW = 100 / cols;
+            int cellH = 100 / rows;
+
+            Random rand = new Random();
+            backupCounter = numAgents;
+            int count = 1;
+
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    if (count > numCustomers) break;
+                    int x = (c * cellW) + rand.nextInt(Math.max(1, cellW - 5));
+                    int y = (r * cellH) + rand.nextInt(Math.max(1, cellH - 5));
+
+                    Parcel p = new Parcel("P" + count, x, y, 1);
+                    initParcels.add(p);
+                    parcelDirectory.put(p.getDestination(), p);
+                    initTotalDemand += p.getDemand();
+                    previewNodes.add(p.getDestination());
+                    count++;
+                }
+            }
+
+            initPendingAgents = numAgents;
+            for (int i = 1; i <= numAgents; i++) {
+                String name = "DA" + i;
+                spawnDynamicAgent(name, 50, 50, 5, true);
+                activeDrivingAgents.add(name);
+                currentLocs.put(name, depot);
+            }
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
         }
     }
 
-    private void runInitialOptimizationPipeline() {
-        addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
-            @Override
-            public void action() {
-                RouteState baseState = new RouteState();
-                for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
-
-                for (Parcel p : pendingInitialParcels) {
-                    baseState = greedyEngine.insertNewParcel(p, baseState, fleetCapacities, parcelDirectory);
-                }
-
-                System.out.println("MRA: Running ALNS engine...");
-                RouteState optimizedState = alnsEngine.optimize(baseState, 3000, fleetCapacities, parcelDirectory);
-
-                // Record Initial Plan
-                for (Map.Entry<String, List<Point>> entry : optimizedState.getRoutes().entrySet()) {
-                    initialPlannedRoutes.put(entry.getKey(), new ArrayList<>(entry.getValue()));
-                }
-
-                dispatch(optimizedState, new HashMap<>());
-
-                myGui.unlockPhase2();
-                if (trackerGui == null) trackerGui = new MapTrackerGui();
-                trackerGui.display();
-            }
-        });
+    private void checkCapacityLoop() {
+        int currentCapacity = fleetCapacities.values().stream().mapToInt(Integer::intValue).sum();
+        if (currentCapacity < initTotalDemand) {
+            backupCounter++;
+            String backupName = "DA" + backupCounter;
+            myGui.log("Alert: Insufficient capacity. Spawning Backup: " + backupName);
+            spawnDynamicAgent(backupName, 50, 50, 5, true);
+            activeDrivingAgents.add(backupName);
+            currentLocs.put(backupName, depot);
+            initPendingAgents = 1;
+        } else {
+            myGui.log("Capacity check passed. Click '2. Plot Routes'.");
+            myGui.enablePlotting();
+        }
     }
 
+    public void plotRoutes() {
+        myGui.log("--- Plotting Routes via Tabu Solver ---");
+        RouteState baseState = new RouteState();
+        for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
+        for (Parcel p : initParcels) {
+            baseState = tabuEngine.optimize(baseState, p, fleetCapacities, parcelDirectory, new HashMap<>(), new HashSet<>());
+        }
+        previewNodes.clear();
+        for (Map.Entry<String, List<Point>> entry : baseState.getRoutes().entrySet()) {
+            initialPlannedRoutes.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            remainingPaths.put(entry.getKey(), entry.getValue());
+        }
+        plannedBaseState = baseState;
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+        myGui.log("Routes plotted successfully. Click '3. Dispatch Fleet'.");
+        myGui.enableDispatch();
+    }
+
+    public void dispatchFleet() {
+        myGui.log("--- Dispatching Fleet ---");
+        dispatchRoutes(plannedBaseState, null);
+        isPhase2Active = true;
+        myGui.setPhase2Enabled(true);
+        myGui.log("Fleet has been dispatched and is now moving.");
+    }
+
+    // ==========================================
+    // DYNAMIC INJECTION
+    // ==========================================
     public void injectDynamicParcel(Parcel newParcel) {
-        if (fleet.isEmpty()) return;
+        if (!isPhase2Active) return;
         parcelDirectory.put(newParcel.getDestination(), newParcel);
+        dynamicDestinations.add(newParcel.getDestination());
+        myGui.log("Dynamic Request: " + newParcel.getId());
 
-        dynamicTargetsThisRound.clear();
-        dynamicTargetsThisRound.add(newParcel.getDestination()); // Explicitly flag this as a brand new box!
-
-        addBehaviour(new FreezeOptimizeDispatchBehaviour(newParcel));
-    }
-
-    private final class FreezeOptimizeDispatchBehaviour extends Behaviour {
-        private final Parcel parcel;
-        private int phase = 0;
-        private final Map<String, AgentStatus> pending = new LinkedHashMap<>();
-        private long waitUntil = 0L;
-        private RouteState optimized;
-
-        FreezeOptimizeDispatchBehaviour(Parcel parcel) { this.parcel = parcel; }
-
-        @Override
-        public void action() {
-            switch (phase) {
-                case 0 -> sendFreeze();
-                case 1 -> collectReplies();
-                case 2 -> runSolversAndDispatch();
-            }
-        }
-
-        private void sendFreeze() {
-            pending.clear();
-            for (AID aid : fleet) pending.put(aid.getLocalName(), null);
-            ACLMessage m = new ACLMessage(ACLMessage.REQUEST);
-            m.setContent(FREEZE_CONTENT);
-            m.setConversationId(CID_FREEZE);
-            for (AID aid : fleet) m.addReceiver(aid);
-            send(m);
-            waitUntil = System.currentTimeMillis() + freezeTimeoutMs;
-            phase = 1;
-        }
-
-        private void collectReplies() {
-            MessageTemplate tpl = MessageTemplate.and(MessageTemplate.MatchPerformative(ACLMessage.INFORM), MessageTemplate.MatchConversationId(CID_FREEZE));
-            ACLMessage msg;
-            while ((msg = receive(tpl)) != null) {
-                String name = msg.getSender().getLocalName();
-                if (pending.containsKey(name)) {
-                    AgentStatus status = parseStatus(msg.getContent());
-                    pending.put(name, status);
-                    fleetCapacities.put(name, status.maxCapacity);
-                }
-            }
-            if (pending.values().stream().allMatch(s -> s != null) || System.currentTimeMillis() > waitUntil) phase = 2;
-            else block();
-        }
-
-        private void runSolversAndDispatch() {
-            RouteState state = mergeFleetState(pending);
-            RouteState greedy = greedyEngine.insertNewParcel(parcel, state, fleetCapacities, parcelDirectory);
-            optimized = alnsEngine.optimize(greedy, alnsTimeMs, fleetCapacities, parcelDirectory);
-            dispatch(optimized, pending);
-            phase = 3;
-        }
-        @Override public boolean done() { return phase >= 3; }
-    }
-
-    private void dispatch(RouteState state, Map<String, AgentStatus> lastKnown) {
-        summaryHasBeenShown = false;
+        RouteState snapshot = new RouteState();
+        Map<String, Integer> lockedPrefixes = new HashMap<>();
 
         for (AID aid : fleet) {
             String name = aid.getLocalName();
-            activeDrivingAgents.add(name);
+            Point loc = currentLocs.getOrDefault(name, depot);
+            snapshot.addAgent(name, loc);
+            List<Point> remaining = remainingPaths.getOrDefault(name, new ArrayList<>());
+            int lockCount = 0;
 
-            List<Point> pts = state.getRoutes().get(name);
-            if (pts == null || pts.size() < 2) continue;
+            if (!remaining.isEmpty()) {
+                // THE INVENTORY LOCK FIX:
+                // Find where the truck next visits the depot.
+                // Everything before this visit is physically inside the truck's trunk!
+                int nextDepotIndex = remaining.indexOf(depot);
 
-            List<Point> stops = new ArrayList<>();
-            Point currentLoc = pts.get(0);
-            stops.add(currentLoc);
+                if (nextDepotIndex == -1) {
+                    // No depot return in the route. The truck has ALL remaining boxes in its trunk.
+                    lockCount = remaining.size();
+                } else {
+                    // Lock the "manifest" of everything up to the next depot stop.
+                    // Anything AFTER the depot stop is fair game for the Standby Agent to steal.
+                    lockCount = nextDepotIndex;
+                }
 
-            // INTELLIGENT PHYSICAL DETOUR LOGIC
-            // If they are currently at the depot, they are already loaded!
-            boolean hasVisitedDepotThisTrip = currentLoc.equals(depot);
+                // Safety: Always lock at least the immediate next node to prevent physical U-Turns
+                lockCount = Math.max(lockCount, 1);
 
-            for (int i = 1; i < pts.size(); i++) {
-                Point p = pts.get(i);
+                // Safety: If extremely close to the next node, lock the one after it too
+                if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
+                    lockCount = Math.max(lockCount, 2);
+                }
 
+                // Rebuild the snapshot route for the math engine
+                for (int i = 0; i < remaining.size(); i++) {
+                    snapshot.insertNode(name, i + 1, remaining.get(i));
+                }
+            }
+            lockedPrefixes.put(name, lockCount);
+        }
+
+        Set<Point> dynamicSnapshot = new HashSet<>(dynamicDestinations);
+        CompletableFuture.supplyAsync(() -> tabuEngine.optimize(snapshot, newParcel, fleetCapacities, parcelDirectory, lockedPrefixes, dynamicSnapshot))
+                .thenAccept(optimizedState -> addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
+                    public void action() { dispatchRoutes(optimizedState, newParcel); }
+                }));
+    }
+
+    // ==========================================
+    // STANDBY AGENT DEPLOYMENT
+    // ==========================================
+    public void deployStandby(String name, int capacity) {
+        myGui.log("Deploying Standby Agent: " + name + " (Capacity: " + capacity + ")");
+        spawnDynamicAgent(name, depot.x, depot.y, capacity, false);
+
+        // Immediately register all metadata so UI updates seamlessly
+        fleetCapacities.put(name, capacity);
+        activeDrivingAgents.add(name);
+        currentLocs.put(name, depot);
+        remainingPaths.put(name, new ArrayList<>());
+
+        // Ensure it appears on the End of Day Summary even if it doesn't move
+        initialPlannedRoutes.put(name, new ArrayList<>(List.of(depot)));
+        actualDrivenRoutes.put(name, new ArrayList<>(List.of(depot)));
+
+        // Force a map repaint to show the new agent in the Tracker Legend
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+    }
+
+    private void dispatchRoutes(RouteState state, Parcel dynamicParcel) {
+        for (AID aid : fleet) {
+            String name = aid.getLocalName();
+            List<Point> mathNodes = state.getRoutes().get(name);
+            if (mathNodes == null || mathNodes.size() < 2) continue;
+
+            List<Point> physicalStops = new ArrayList<>();
+            boolean hasInventoryForDynamic = false;
+
+            for (int i = 1; i < mathNodes.size(); i++) {
+                Point p = mathNodes.get(i);
                 if (p.equals(depot)) {
-                    hasVisitedDepotThisTrip = true;
-                    stops.add(p);
+                    hasInventoryForDynamic = true;
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(p);
                     continue;
                 }
-
-                // If it is NOT in the van, OR it was just injected dynamically, it's a NEW box.
-                boolean isNewParcel = !inVanParcels.contains(p) || dynamicTargetsThisRound.contains(p);
-
-                // If it's a new box, and we haven't gone to the warehouse yet, FORCE a detour right now!
-                if (isNewParcel && !hasVisitedDepotThisTrip) {
-                    stops.add(new Point(depot));
-                    hasVisitedDepotThisTrip = true; // Box is now loaded
+                if (dynamicDestinations.contains(p) && !hasInventoryForDynamic) {
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
+                    hasInventoryForDynamic = true;
                 }
-
-                stops.add(p);
+                physicalStops.add(p);
             }
+            if (!physicalStops.isEmpty() && !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
 
-            // Force route to end at Warehouse
-            if (!stops.isEmpty() && !stops.get(stops.size() - 1).equals(depot)) {
-                stops.add(new Point(depot));
+            StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
+            for (int i = 0; i < physicalStops.size(); i++) {
+                Point p = physicalStops.get(i);
+                sb.append(p.x).append(":").append(p.y);
+                if (i < physicalStops.size() - 1) sb.append(",");
             }
-
-            // Remove consecutive duplicates
-            for (int i = stops.size() - 1; i > 0; i--) {
-                if (stops.get(i).equals(stops.get(i - 1))) {
-                    stops.remove(i);
-                }
-            }
-
-            StringBuilder coords = new StringBuilder();
-            StringBuilder routeLog = new StringBuilder();
-
-            for (int i = 1; i < stops.size(); i++) {
-                Point p = stops.get(i);
-                if (i > 1) coords.append(',');
-                coords.append(p.x).append(':').append(p.y);
-
-                if (p.equals(depot)) {
-                    routeLog.append("Warehouse(Pickup) ");
-                } else {
-                    Parcel parcel = parcelDirectory.get(p);
-                    routeLog.append(parcel != null ? parcel.getId() : ("Unk(" + p.x + ")")).append(" ");
-                }
-            }
-
-            AgentStatus prev = lastKnown.get(name);
-            int free = prev != null ? prev.freeCapacity : fleetCapacities.getOrDefault(name, 5);
-            int max = prev != null ? prev.maxCapacity : fleetCapacities.getOrDefault(name, 5);
-
-            String payload = PREFIX_ROUTE + free + ":" + max + "|" + coords;
 
             ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
             m.addReceiver(aid);
             m.setConversationId(CID_ROUTE);
-            m.setContent(payload);
+            m.setContent(sb.toString());
             send(m);
-
-            System.out.println("MRA -> " + name + " Route Assigned: [ " + routeLog.toString().trim() + " ]");
         }
-    }
-
-    private static class AgentStatus {
-        final Point location; final int freeCapacity; final int maxCapacity; final List<Point> tailStops;
-        AgentStatus(Point loc, int free, int max, List<Point> tail) { location = loc; freeCapacity = free; maxCapacity = max; tailStops = tail; }
-    }
-
-    private static AgentStatus parseStatus(String content) {
-        String rest = content.substring(PREFIX_STATUS.length());
-        String[] headTail = rest.split(":", 5);
-        int x = Integer.parseInt(headTail[0].trim()), y = Integer.parseInt(headTail[1].trim());
-        int free = Integer.parseInt(headTail[2].trim()), max = Integer.parseInt(headTail[3].trim());
-        List<Point> stops = new ArrayList<>();
-        if (headTail.length == 5 && !headTail[4].isBlank()) {
-            for (String token : headTail[4].split(",")) {
-                String[] xy = token.split(":");
-                stops.add(new Point(Integer.parseInt(xy[0].trim()), Integer.parseInt(xy[1].trim())));
-            }
-        }
-        return new AgentStatus(new Point(x, y), free, max, stops);
-    }
-
-    private RouteState mergeFleetState(Map<String, AgentStatus> byName) {
-        RouteState state = new RouteState();
-        inVanParcels.clear();
-
-        for (AID aid : fleet) {
-            String name = aid.getLocalName();
-            AgentStatus st = byName.get(name);
-            state.addAgent(name, st != null ? st.location : new Point(depot));
-
-            if (st != null) {
-                // Determine what is ACTUALLY physically in the van right now
-                boolean passedDepot = st.location.equals(depot);
-                for (Point p : st.tailStops) {
-                    if (p.equals(depot)) {
-                        passedDepot = true;
-                    } else if (!passedDepot) {
-                        // Any customer before the depot detour is physically in the van!
-                        inVanParcels.add(p);
-                    }
-                    state.insertNode(name, state.getRoutes().get(name).size(), new Point(p));
-                }
-            }
-        }
-        return state;
     }
 
     private void processGpsPing(String agentName, String content) {
-        if (trackerGui == null || !trackerGui.isVisible()) return;
         try {
             String[] parts = content.split("\\|");
-            String[] locCoords = parts[0].split(",");
-            Point currentLoc = new Point(Integer.parseInt(locCoords[0]), Integer.parseInt(locCoords[1]));
+            String[] coords = parts[0].split(",");
+            Point loc = new Point(Integer.parseInt(coords[0]), Integer.parseInt(coords[1]));
 
+            currentLocs.put(agentName, loc);
             List<Point> history = actualDrivenRoutes.computeIfAbsent(agentName, k -> new ArrayList<>());
-            if (history.isEmpty() || !history.get(history.size() - 1).equals(currentLoc)) {
-                history.add(currentLoc);
-            }
+            if (history.isEmpty() || !history.get(history.size() - 1).equals(loc)) history.add(loc);
 
-            List<Point> remainingStops = new ArrayList<>();
+            List<Point> rem = new ArrayList<>();
             if (parts.length > 1 && !parts[1].isBlank()) {
-                for (String stop : parts[1].split(";")) {
-                    String[] sCoords = stop.split(",");
-                    remainingStops.add(new Point(Integer.parseInt(sCoords[0]), Integer.parseInt(sCoords[1])));
+                for (String s : parts[1].split(";")) {
+                    String[] sc = s.split(",");
+                    rem.add(new Point(Integer.parseInt(sc[0]), Integer.parseInt(sc[1])));
                 }
             }
-            trackerGui.updateAgent(agentName, currentLoc, remainingStops);
+            remainingPaths.put(agentName, rem);
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
+        } catch (Exception e) {}
+    }
+
+    public void spawnDynamicAgent(String name, int startX, int startY, int capacity, boolean showGui) {
+        try {
+            Object[] args = showGui ? new Object[]{startX + "," + startY + "," + capacity, "SHOW_GUI"} : new Object[]{startX + "," + startY + "," + capacity};
+            jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
+            ac.start();
+            fleet.add(new AID(name, AID.ISLOCALNAME));
         } catch (Exception e) {}
     }
 
     public Map<String, List<Point>> getInitialPlannedRoutes() { return initialPlannedRoutes; }
     public Map<String, List<Point>> getActualDrivenRoutes() { return actualDrivenRoutes; }
-
-    public void spawnDynamicAgent(String name, int startX, int startY, int capacity) {
-        try {
-            Object[] args = new Object[]{startX + "," + startY + "," + capacity};
-            jade.wrapper.AgentController ac = getContainerController().createNewAgent(name, "RoutingAgent.Extension.RoutingAgent.DeliveryAgent", args);
-            ac.start();
-            fleet.add(new AID(name, AID.ISLOCALNAME));
-            fleetCapacities.put(name, capacity);
-        } catch (Exception e) {}
-    }
 }

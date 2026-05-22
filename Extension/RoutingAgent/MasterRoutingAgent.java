@@ -191,7 +191,8 @@ public class MasterRoutingAgent extends Agent {
         RouteState baseState = new RouteState();
         for (AID aid : fleet) baseState.addAgent(aid.getLocalName(), depot);
         for (Parcel p : initParcels) {
-            baseState = tabuEngine.optimize(baseState, p, fleetCapacities, parcelDirectory, new HashMap<>(), new HashSet<>());
+            // Pass the logger callback to see the math engine working!
+            baseState = tabuEngine.optimize(baseState, p, fleetCapacities, parcelDirectory, new HashMap<>(), new HashSet<>(), msg -> myGui.log(msg));
         }
         previewNodes.clear();
         for (Map.Entry<String, List<Point>> entry : baseState.getRoutes().entrySet()) {
@@ -204,17 +205,18 @@ public class MasterRoutingAgent extends Agent {
         myGui.enableDispatch();
     }
 
+    // ==========================================
+    // DISPATCH & INJECTION UPDATES
+    // ==========================================
     public void dispatchFleet() {
         myGui.log("--- Dispatching Fleet ---");
-        dispatchRoutes(plannedBaseState, null);
+        // Pass empty maps because initial dispatch has no dynamic history or trunk contents
+        dispatchRoutes(plannedBaseState, null, new HashMap<>());
         isPhase2Active = true;
         myGui.setPhase2Enabled(true);
         myGui.log("Fleet has been dispatched and is now moving.");
     }
 
-    // ==========================================
-    // DYNAMIC INJECTION
-    // ==========================================
     public void injectDynamicParcel(Parcel newParcel) {
         if (!isPhase2Active) return;
         parcelDirectory.put(newParcel.getDestination(), newParcel);
@@ -223,6 +225,7 @@ public class MasterRoutingAgent extends Agent {
 
         RouteState snapshot = new RouteState();
         Map<String, Integer> lockedPrefixes = new HashMap<>();
+        Map<String, Set<Point>> trunkContents = new HashMap<>();
 
         for (AID aid : fleet) {
             String name = aid.getLocalName();
@@ -232,41 +235,84 @@ public class MasterRoutingAgent extends Agent {
             int lockCount = 0;
 
             if (!remaining.isEmpty()) {
-                // THE INVENTORY LOCK FIX:
-                // Find where the truck next visits the depot.
-                // Everything before this visit is physically inside the truck's trunk!
                 int nextDepotIndex = remaining.indexOf(depot);
+                if (nextDepotIndex == -1) lockCount = remaining.size();
+                else lockCount = nextDepotIndex;
 
-                if (nextDepotIndex == -1) {
-                    // No depot return in the route. The truck has ALL remaining boxes in its trunk.
-                    lockCount = remaining.size();
-                } else {
-                    // Lock the "manifest" of everything up to the next depot stop.
-                    // Anything AFTER the depot stop is fair game for the Standby Agent to steal.
-                    lockCount = nextDepotIndex;
-                }
-
-                // Safety: Always lock at least the immediate next node to prevent physical U-Turns
                 lockCount = Math.max(lockCount, 1);
-
-                // Safety: If extremely close to the next node, lock the one after it too
                 if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
                     lockCount = Math.max(lockCount, 2);
                 }
 
-                // Rebuild the snapshot route for the math engine
-                for (int i = 0; i < remaining.size(); i++) {
-                    snapshot.insertNode(name, i + 1, remaining.get(i));
-                }
+                Set<Point> inTrunk = new HashSet<>();
+                for (int i = 0; i < lockCount; i++) inTrunk.add(remaining.get(i));
+                trunkContents.put(name, inTrunk);
+
+                for (int i = 0; i < remaining.size(); i++) snapshot.insertNode(name, i + 1, remaining.get(i));
+            } else {
+                trunkContents.put(name, new HashSet<>());
             }
             lockedPrefixes.put(name, lockCount);
         }
 
         Set<Point> dynamicSnapshot = new HashSet<>(dynamicDestinations);
-        CompletableFuture.supplyAsync(() -> tabuEngine.optimize(snapshot, newParcel, fleetCapacities, parcelDirectory, lockedPrefixes, dynamicSnapshot))
+
+        // Pass the logger callback here as well
+        CompletableFuture.supplyAsync(() -> tabuEngine.optimize(snapshot, newParcel, fleetCapacities, parcelDirectory, lockedPrefixes, dynamicSnapshot, msg -> myGui.log(msg)))
                 .thenAccept(optimizedState -> addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
-                    public void action() { dispatchRoutes(optimizedState, newParcel); }
+                    public void action() { dispatchRoutes(optimizedState, newParcel, trunkContents); }
                 }));
+    }
+
+    private void dispatchRoutes(RouteState state, Parcel dynamicParcel, Map<String, Set<Point>> trunkContents) {
+        for (AID aid : fleet) {
+            String name = aid.getLocalName();
+            List<Point> mathNodes = state.getRoutes().get(name);
+            if (mathNodes == null || mathNodes.size() < 2) continue;
+
+            Set<Point> inTrunk = trunkContents.getOrDefault(name, new HashSet<>());
+            List<Point> physicalStops = new ArrayList<>();
+            boolean hasInventoryForDynamic = false;
+
+            for (int i = 1; i < mathNodes.size(); i++) {
+                Point p = mathNodes.get(i);
+
+                if (p.equals(depot)) {
+                    hasInventoryForDynamic = true;
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(p);
+                    continue;
+                }
+
+                // THE FIX: Instead of relying on index math, we ask memory directly.
+                // If it's already in the trunk, skip the warehouse detour entirely!
+                if (inTrunk.contains(p)) {
+                    physicalStops.add(p);
+                    continue;
+                }
+
+                // If outside the trunk, apply normal dynamic depot rules
+                if (dynamicDestinations.contains(p) && !hasInventoryForDynamic) {
+                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
+                    hasInventoryForDynamic = true;
+                }
+                physicalStops.add(p);
+            }
+
+            if (!physicalStops.isEmpty() && !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
+
+            StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
+            for (int i = 0; i < physicalStops.size(); i++) {
+                Point p = physicalStops.get(i);
+                sb.append(p.x).append(":").append(p.y);
+                if (i < physicalStops.size() - 1) sb.append(",");
+            }
+
+            ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
+            m.addReceiver(aid);
+            m.setConversationId(CID_ROUTE);
+            m.setContent(sb.toString());
+            send(m);
+        }
     }
 
     // ==========================================
@@ -288,45 +334,6 @@ public class MasterRoutingAgent extends Agent {
 
         // Force a map repaint to show the new agent in the Tracker Legend
         myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths, fleetCapacities, previewNodes);
-    }
-
-    private void dispatchRoutes(RouteState state, Parcel dynamicParcel) {
-        for (AID aid : fleet) {
-            String name = aid.getLocalName();
-            List<Point> mathNodes = state.getRoutes().get(name);
-            if (mathNodes == null || mathNodes.size() < 2) continue;
-
-            List<Point> physicalStops = new ArrayList<>();
-            boolean hasInventoryForDynamic = false;
-
-            for (int i = 1; i < mathNodes.size(); i++) {
-                Point p = mathNodes.get(i);
-                if (p.equals(depot)) {
-                    hasInventoryForDynamic = true;
-                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(p);
-                    continue;
-                }
-                if (dynamicDestinations.contains(p) && !hasInventoryForDynamic) {
-                    if (physicalStops.isEmpty() || !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
-                    hasInventoryForDynamic = true;
-                }
-                physicalStops.add(p);
-            }
-            if (!physicalStops.isEmpty() && !physicalStops.get(physicalStops.size()-1).equals(depot)) physicalStops.add(new Point(depot));
-
-            StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
-            for (int i = 0; i < physicalStops.size(); i++) {
-                Point p = physicalStops.get(i);
-                sb.append(p.x).append(":").append(p.y);
-                if (i < physicalStops.size() - 1) sb.append(",");
-            }
-
-            ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
-            m.addReceiver(aid);
-            m.setConversationId(CID_ROUTE);
-            m.setContent(sb.toString());
-            send(m);
-        }
     }
 
     private void processGpsPing(String agentName, String content) {

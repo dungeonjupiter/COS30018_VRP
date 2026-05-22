@@ -26,7 +26,7 @@ public class RouteSummaryGui extends JFrame {
         this.actualRoutes = actual;
         this.directory = directory;
 
-        setSize(900, 800); // Widened to accommodate the shifted map
+        setSize(950, 800); // Widened slightly for the larger legend
         setLayout(new BorderLayout());
 
         mapPanel = new SummaryPanel();
@@ -60,8 +60,7 @@ public class RouteSummaryGui extends JFrame {
 
     private class SummaryPanel extends JPanel {
         private final Point depot = new Point(50, 50);
-        // THE FIX: Separate X and Y offsets. Shifted X 220 pixels right to clear the legend.
-        private static final int OFFSET_X = 220;
+        private static final int OFFSET_X = 240; // Shifted further right to clear wider legend
         private static final int OFFSET_Y = 60;
         private static final int SCALE = 6;
 
@@ -80,6 +79,26 @@ public class RouteSummaryGui extends JFrame {
             Point last = rawGps.get(rawGps.size() - 1);
             if (!smoothed.get(smoothed.size() - 1).equals(last)) smoothed.add(last);
             return smoothed;
+        }
+
+        private double calculateDistance(List<Point> path) {
+            if (path == null || path.size() < 2) return 0.0;
+            double distance = 0.0;
+            for (int i = 0; i < path.size() - 1; i++) {
+                distance += path.get(i).distance(path.get(i+1));
+            }
+            return distance;
+        }
+
+        // Helper to sum the total distance of all agents combined
+        private double calculateFleetTotalDistance(Map<String, List<Point>> routes, boolean isActual) {
+            if (routes == null) return 0.0;
+            double total = 0.0;
+            for (List<Point> path : routes.values()) {
+                List<Point> processedPath = isActual ? smoothActualRoute(path) : path;
+                total += calculateDistance(processedPath);
+            }
+            return total;
         }
 
         @Override
@@ -156,12 +175,16 @@ public class RouteSummaryGui extends JFrame {
             Map<String, List<Point>> activeMap = showingInitial ? initialRoutes : actualRoutes;
             int numAgents = (activeMap != null) ? activeMap.size() : 0;
 
-            // Draw Legend Background Box
-            int boxHeight = 50 + (numAgents * 20);
+            // Calculate total distances
+            double totalPlanned = calculateFleetTotalDistance(initialRoutes, false);
+            double totalActual = calculateFleetTotalDistance(actualRoutes, true);
+
+            // Expand box height to fit the new totals at the bottom
+            int boxHeight = 50 + (numAgents * 20) + 55;
             g2d.setColor(new Color(20, 20, 25, 210));
-            g2d.fillRoundRect(10, 10, 180, boxHeight, 15, 15);
+            g2d.fillRoundRect(10, 10, 220, boxHeight, 15, 15);
             g2d.setColor(new Color(80, 80, 90));
-            g2d.drawRoundRect(10, 10, 180, boxHeight, 15, 15);
+            g2d.drawRoundRect(10, 10, 220, boxHeight, 15, 15);
 
             int ly = 30;
             g2d.setColor(Color.WHITE);
@@ -178,14 +201,31 @@ public class RouteSummaryGui extends JFrame {
             if (activeMap != null) {
                 int idx = 0;
                 for (String name : activeMap.keySet()) {
+                    List<Point> path = activeMap.get(name);
+                    if (!showingInitial) path = smoothActualRoute(path);
+
+                    double individualDist = calculateDistance(path);
+
                     ly += 20;
                     g2d.setColor(agentColors[idx % agentColors.length]);
                     g2d.fillRect(20, ly - 9, 10, 10);
                     g2d.setColor(Color.WHITE);
-                    g2d.drawString(name + " Route", 35, ly);
+                    g2d.drawString(String.format("%s Route (Dist: %.1f)", name, individualDist), 35, ly);
                     idx++;
                 }
             }
+
+            // Draw a subtle separator line
+            ly += 15;
+            g2d.setColor(new Color(100, 100, 110));
+            g2d.drawLine(20, ly - 10, 210, ly - 10);
+
+            // Draw the global totals
+            g2d.setColor(Color.WHITE);
+            g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
+            g2d.drawString(String.format("Total Planned Dist: %.1f", totalPlanned), 20, ly);
+            ly += 20;
+            g2d.drawString(String.format("Total Actual Dist:  %.1f", totalActual), 20, ly);
         }
 
         private void drawArrowHead(Graphics2D g2d, int x1, int y1, int x2, int y2, Color color) {

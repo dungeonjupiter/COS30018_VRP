@@ -3,6 +3,14 @@ package RoutingAgent.Extension.Solver;
 import java.awt.Point;
 import java.io.Serializable;
 
+/**
+ * Parcel — delivery task model.
+ *
+ * Added field vs original: {@code sourceWarehouseId}
+ *   - Default 0, so all single-warehouse code still compiles unchanged.
+ *   - Used by MRA to determine which warehouse a DA must visit before delivery.
+ *   - TabuRoutingEngine never reads this field, so solver logic is untouched.
+ */
 public class Parcel implements Serializable {
 
     private String id;

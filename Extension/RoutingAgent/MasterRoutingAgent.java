@@ -15,7 +15,7 @@ import java.util.stream.Collectors;
 
 public class MasterRoutingAgent extends Agent {
 
-    // ACL constants
+    //ACL constants
     public static final String CID_ROUTE    = "vrp-route";
     public static final String CID_TRACKING = "vrp-tracking";
     public static final String CID_DONE     = "vrp-done";
@@ -32,7 +32,7 @@ public class MasterRoutingAgent extends Agent {
             {50, 80}    // WH-2 bottom-centre
     };
 
-    // Original state fields
+    // Original state fields (unchanged names)
     private MainWindow  myGui;
     private final TabuRoutingEngine tabuEngine = new TabuRoutingEngine();
     private final List<AID>         fleet      = new ArrayList<>();
@@ -55,7 +55,7 @@ public class MasterRoutingAgent extends Agent {
     private int          initPendingAgents = 0;
     private int          backupCounter    = 0;
 
-    // ── NEW: Multi-warehouse state ────────────────────────────────────────────
+    // Multi-warehouse state
     private List<Warehouse>            warehouses       = new ArrayList<>();
     private SpawnMode                  spawnMode        = SpawnMode.DISTRIBUTED;
     /** DA local-name → warehouse id it belongs to. */
@@ -65,7 +65,6 @@ public class MasterRoutingAgent extends Agent {
     /** warehouse id → parcels assigned to it. */
     private Map<Integer, List<Parcel>> warehouseParcels = new HashMap<>();
 
-    // ─────────────────────────────────────────────────────────────────────────
     @Override
     protected void setup() {
         myGui = new MainWindow(this);
@@ -152,7 +151,7 @@ public class MasterRoutingAgent extends Agent {
         // Build warehouses
         warehouses.clear();
         if (numWarehouses == 1) {
-            warehouses.add(new Warehouse(0, 50, 50));
+            warehouses.add(new Warehouse(0, 50, 50, "Main Depot"));
         } else {
             for (int i = 0; i < Math.min(numWarehouses, 3); i++) {
                 warehouses.add(new Warehouse(i, WH_3_POSITIONS[i][0], WH_3_POSITIONS[i][1]));
@@ -165,7 +164,7 @@ public class MasterRoutingAgent extends Agent {
         }
 
         if (!mapFilePath.equals("RANDOM")) {
-            // FIX 3: File mode = single warehouse only (documented)
+            // File mode = single warehouse only
             myGui.log("Note: file mode uses single-warehouse (WH-0 only).");
             loadFromFile(mapFilePath, numAgents);
         } else {
@@ -213,30 +212,41 @@ public class MasterRoutingAgent extends Agent {
     }
 
     private void generateRandom(int numCustomers, int numAgents) {
-        int cols  = (int) Math.ceil(Math.sqrt(numCustomers));
-        int rows  = (int) Math.ceil((double) numCustomers / cols);
-        int cellW = 100 / cols;
-        int cellH = 100 / rows;
         Random rand = new Random();
         backupCounter = numAgents;
-        int count = 1;
+        int count    = 1;
+        int attempts = 0;
+        int maxAttempts = numCustomers * 50;
 
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                if (count > numCustomers) break;
-                int x = (c * cellW) + rand.nextInt(Math.max(1, cellW - 5));
-                int y = (r * cellH) + rand.nextInt(Math.max(1, cellH - 5));
-                Warehouse nearest = nearestWarehouse(new Point(x, y));
-                Parcel p = new Parcel("P" + count, x, y, 1, nearest.getId());
-                initParcels.add(p);
-                parcelDirectory.put(p.getDestination(), p);
-                initTotalDemand += p.getDemand();
-                previewNodes.add(p.getDestination());
-                warehouseParcels.get(nearest.getId()).add(p);
-                count++;
-            }
+        while (count <= numCustomers && attempts < maxAttempts) {
+            attempts++;
+            int   x  = rand.nextInt(98) + 1;
+            int   y  = rand.nextInt(98) + 1;
+            Point pt = new Point(x, y);
+
+            if (isWarehousePosition(pt)) continue;
+
+            Warehouse nearest = nearestWarehouse(pt);
+            Parcel p = new Parcel("P" + count, x, y, 1, nearest.getId());
+            initParcels.add(p);
+            parcelDirectory.put(p.getDestination(), p);
+            initTotalDemand += p.getDemand();
+            previewNodes.add(p.getDestination());
+            warehouseParcels.get(nearest.getId()).add(p);
+            count++;
         }
+        if (count <= numCustomers)
+            myGui.log("WARNING: generated only " + (count-1) + " of "
+                    + numCustomers + " customers (warehouse position collisions).");
+
         spawnAgentGroup(numAgents, null);
+    }
+
+    /** True if p exactly matches any warehouse position. */
+    private boolean isWarehousePosition(Point p) {
+        for (Warehouse wh : warehouses)
+            if (wh.getPos().equals(p)) return true;
+        return false;
     }
 
     /** Spawn numAgents DAs, distributing across warehouses per spawnMode. */
@@ -317,54 +327,90 @@ public class MasterRoutingAgent extends Agent {
      * Results are merged into plannedBaseState.
      */
     public void plotRoutes() {
-        myGui.log("--- Plotting Routes (per-warehouse Tabu) ---");
+        myGui.log("--- Plotting Routes (mode=" + spawnMode + ") ---");
         RouteState merged = new RouteState();
 
-        for (Warehouse wh : warehouses) {
-            List<AID>    agents  = warehouseFleet.getOrDefault(wh.getId(), List.of());
-            List<Parcel> parcels = warehouseParcels.getOrDefault(wh.getId(), List.of());
+        if (spawnMode == SpawnMode.CENTRALIZED) {
+            Warehouse mainWh = warehouses.get(0);
+            int dx = 50 - mainWh.getX();
+            int dy = 50 - mainWh.getY();
 
-            if (agents.isEmpty()) {
-                myGui.log("  " + wh.getName() + ": no agents, skipping.");
-                continue;
-            }
-            myGui.log("  " + wh.getName() + ": " + agents.size()
-                    + " agents, " + parcels.size() + " parcels.");
-
-            int dx = 50 - wh.getX();
-            int dy = 50 - wh.getY();
-
-            // Build shifted state — all agents for this WH start at (50,50) in Tabu space
-            RouteState whState = new RouteState();
-            for (AID aid : agents) {
-                whState.addAgent(aid.getLocalName(), new Point(50, 50));
+            // All agents start at the main warehouse
+            RouteState state = new RouteState();
+            for (AID aid : fleet) {
+                state.addAgent(aid.getLocalName(), new Point(50, 50));
             }
 
-            // Build shifted parcel directory (only this WH's parcels matter)
-            Map<Point, Parcel> shiftedDir = new HashMap<>();
-            for (Parcel p : parcels) {
-                shiftedDir.put(new Point(p.getDestination().x + dx,
-                                         p.getDestination().y + dy), p);
+            // Collect every parcel from every warehouse
+            List<Parcel> allParcels = new ArrayList<>();
+            for (Warehouse wh : warehouses) {
+                List<Parcel> wp = warehouseParcels.getOrDefault(wh.getId(), List.of());
+                allParcels.addAll(wp);
             }
+            myGui.log("  CENTRALIZED: " + fleet.size() + " agents, "
+                    + allParcels.size() + " total parcels.");
 
-            // Insert each parcel via Tabu (shifted)
-            for (Parcel p : parcels) {
+            Map<Point, Parcel> shiftedDir = buildShiftedDirectory(dx, dy);
+
+            for (Parcel p : allParcels) {
                 Parcel shifted = shiftParcel(p, dx, dy);
-                whState = tabuEngine.optimize(whState, shifted,
-                        filterCapacities(agents), shiftedDir,
+                state = tabuEngine.optimize(state, shifted,
+                        fleetCapacities, shiftedDir,
                         new HashMap<>(), new HashSet<>());
             }
 
-            // Shift routes back to real coordinates and merge
-            for (Map.Entry<String, List<Point>> e : whState.getRoutes().entrySet()) {
-                List<Point> real = shiftPoints(e.getValue(), -dx, -dy, wh.getPos());
+            // Shift back and merge
+            for (Map.Entry<String, List<Point>> e : state.getRoutes().entrySet()) {
+                List<Point> real = shiftPoints(e.getValue(), -dx, -dy, mainWh.getPos());
                 merged.getRoutes().put(e.getKey(), real);
                 initialPlannedRoutes.put(e.getKey(), new ArrayList<>(real));
                 remainingPaths.put(e.getKey(), new ArrayList<>(real));
             }
+
+        } else {
+            // DISTRIBUTED: per-warehouse routing
+            for (Warehouse wh : warehouses) {
+                List<AID>    agents  = warehouseFleet.getOrDefault(wh.getId(), List.of());
+                List<Parcel> parcels = warehouseParcels.getOrDefault(wh.getId(), List.of());
+
+                if (agents.isEmpty()) {
+                    myGui.log("  " + wh.getName() + ": no agents, skipping.");
+                    continue;
+                }
+                myGui.log("  " + wh.getName() + ": " + agents.size()
+                        + " agents, " + parcels.size() + " parcels.");
+
+                int dx = 50 - wh.getX();
+                int dy = 50 - wh.getY();
+
+                RouteState whState = new RouteState();
+                for (AID aid : agents) {
+                    whState.addAgent(aid.getLocalName(), new Point(50, 50));
+                }
+
+                Map<Point, Parcel> shiftedDir = new HashMap<>();
+                for (Parcel p : parcels) {
+                    shiftedDir.put(new Point(p.getDestination().x + dx,
+                                             p.getDestination().y + dy), p);
+                }
+
+                for (Parcel p : parcels) {
+                    Parcel shifted = shiftParcel(p, dx, dy);
+                    whState = tabuEngine.optimize(whState, shifted,
+                            filterCapacities(agents), shiftedDir,
+                            new HashMap<>(), new HashSet<>());
+                }
+
+                for (Map.Entry<String, List<Point>> e : whState.getRoutes().entrySet()) {
+                    List<Point> real = shiftPoints(e.getValue(), -dx, -dy, wh.getPos());
+                    merged.getRoutes().put(e.getKey(), real);
+                    initialPlannedRoutes.put(e.getKey(), new ArrayList<>(real));
+                    remainingPaths.put(e.getKey(), new ArrayList<>(real));
+                }
+            }
         }
 
-        // Agents with no parcels assigned still need an empty route
+        // Any agent not yet in the merged state gets an empty route at their warehouse
         for (AID aid : fleet) {
             String name = aid.getLocalName();
             if (!merged.getRoutes().containsKey(name)) {
@@ -443,7 +489,7 @@ public class MasterRoutingAgent extends Agent {
             }
 
             // Agents from OTHER warehouses get a FULL lock.
-            //         Tabu cannot touch their routes at all.
+            // Tabu cannot touch their routes at all.
             if (!candidateAgents.contains(name)) {
                 lockedPrefixes.put(name, remaining.size());  // ← full lock
                 continue;
@@ -491,27 +537,6 @@ public class MasterRoutingAgent extends Agent {
 
     // Standby Agent Deployment
 
-    /**
-     * Deploy a standby (backup) agent at the specified warehouse.
-     *
-     * What does "Standby Warehouse" mean?
-     *   A standby agent is a reserve vehicle that is idle until deployed.
-     *   The "Standby Warehouse" is WHERE it starts — which physical depot
-     *   it will leave from when given a route.
-     *   Choosing the right warehouse matters:
-     *     - Closest to the new parcel's source = faster pickup
-     *     - Same as the overloaded warehouse = immediately helps that group
-     *   The agent registers itself with that warehouse's fleet so future
-     *   rerouting correctly restricts Tabu to that warehouse group.
-     *
-     * @param name         agent name (must be unique)
-     * @param capacity     how many parcels it can carry
-     * @param warehouseId  which warehouse it starts from (0-based index)
-     */
-    /**
-     * Deploy a standby agent. Warehouse is chosen automatically
-     * (the most strained warehouse), so the GUI doesn't need a selector.
-     */
     public void deployStandby(String name, int capacity) {
         deployStandby(name, capacity, findMostStrainedWarehouse());
     }
@@ -563,7 +588,7 @@ public class MasterRoutingAgent extends Agent {
                     p = new Point(agentWhPos);
                 }
 
-                // Warehouse node (real or translated): marks inventory reload
+                // Warehouse node : marks inventory reload
                 if (p.equals(agentWhPos)) {
                     hasInventoryForDynamic = true;
                     if (physicalStops.isEmpty()
@@ -707,13 +732,13 @@ public class MasterRoutingAgent extends Agent {
         return m;
     }
 
-    // Warehouse lookup with warning on invalid ID
+    // Warehouse lookup with warning on invalid ID─
 
     public Warehouse getWarehouseById(int id) throws IllegalArgumentException {
         for (Warehouse wh : warehouses) {
             if (wh.getId() == id) return wh;
         }
-        // throw instead of silently returning wrong warehouse
+        // FIX 5: throw instead of silently returning wrong warehouse
         throw new IllegalArgumentException(
                 "Warehouse id=" + id + " does not exist. Valid ids: "
                 + warehouses.stream().map(w -> String.valueOf(w.getId()))

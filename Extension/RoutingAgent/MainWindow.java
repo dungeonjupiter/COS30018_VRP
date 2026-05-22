@@ -11,6 +11,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
+/**
+ * MainWindow — tabbed control panel for Multi-Warehouse VRP system.
+ *
+ * GUI layout: JTabbedPane replaces the old cramped BoxLayout stacking.
+ *   Tab 1 "Setup"   — warehouse config, spawn mode, initial fleet
+ *   Tab 2 "Dynamic" — inject parcels, deploy standby
+ *
+ * Standby warehouse is now automatic (MRA picks most-strained warehouse
+ * internally), so no warehouse dropdown is shown in the standby section.
+ *
+ * Parcel source warehouse uses a simple dropdown: Auto or explicit WH-x.
+ */
 public class MainWindow extends JFrame {
 
     private final MasterRoutingAgent myAgent;

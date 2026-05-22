@@ -6,20 +6,6 @@ import java.awt.*;
 import java.util.*;
 import java.util.List;
 
-/**
- * TrackerPanel — Live map panel.
- *
- * Changes from original:
- *   - Accepts List<Warehouse> and draws each with its own colour + label.
- *   - Agent route lines use the colour of their assigned warehouse.
- *   - Legend shows warehouses first (with parcel count), then agents with [WH-x].
- *   - Warehouse nodes in routes are skipped from customer-dot drawing (same
- *     logic as the original depot skip, generalised for multiple depots).
- *   - updateData() has a new overload that accepts warehouses + agentWhIds.
- *     The old single-parameter signature still works (backward compatible).
- *
- * All original drawing methods (drawRouteLine, drawArrow, grid) are UNCHANGED.
- */
 public class TrackerPanel extends JPanel {
 
     // ── Data ──────────────────────────────────────────────────────────────────

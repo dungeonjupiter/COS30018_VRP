@@ -11,25 +11,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * MapLoader — supports both single-warehouse (legacy) and multi-warehouse map files.
- *
- * Legacy format (unchanged, fully backward compatible):
- *   WAREHOUSE 50 50
- *   CUSTOMER  1  15  30
- *   PARCEL    1  0   1        (parcelId  ignored  destCustomerId)
- *
- * Multi-warehouse format (new):
- *   WAREHOUSE 0  20  20       (warehouseId  x  y)
- *   WAREHOUSE 1  80  20
- *   WAREHOUSE 2  50  80
- *   CUSTOMER  1  15  30
- *   PARCEL    1  0   1        (parcelId  sourceWarehouseId  destCustomerId)
- *
- * Detection:
- *   3 tokens after WAREHOUSE keyword -> legacy (x y), assigned id=0.
- *   4 tokens -> multi-warehouse (id x y).
- */
 public class MapLoader {
 
     public static class ParsedData {

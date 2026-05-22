@@ -3,15 +3,6 @@ package RoutingAgent.Extension.RoutingAgent;
 import java.awt.Color;
 import java.awt.Point;
 
-/**
- * Warehouse — a physical depot that agents start from and return to.
- *
- * Each warehouse has a unique ID, map position, and display colour.
- * The coordinate-translation strategy in MasterRoutingAgent shifts each
- * warehouse's position to (50,50) before calling TabuRoutingEngine
- * (which is hardcoded to treat (50,50) as its depot), then shifts back.
- * This means TabuRoutingEngine is never modified.
- */
 public class Warehouse {
 
     /** Fixed display colours for up to 3 warehouses. */

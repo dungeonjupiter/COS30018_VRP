@@ -7,16 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * RouteSummaryGui — End-of-day route summary window.
- *
- * Fixed from original:
- *   - Removed hardcoded depot = new Point(50, 50).
- *   - Now accepts List<Warehouse> and renders all warehouses with their colours.
- *   - smoothActualRoute() now checks ALL warehouse positions, not just (50,50).
- *   - Legend shows each warehouse as a coloured entry.
- *   - Backward-compatible overload kept so old code still compiles.
- */
 public class RouteSummaryGui extends JFrame {
 
     private final Map<String, List<Point>> initialRoutes;

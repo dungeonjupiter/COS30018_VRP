@@ -13,50 +13,6 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
-/**
- * MasterRoutingAgent — Multi-Warehouse Extension.
- *
- * ── Bug fixes in this version ─────────────────────────────────────────────────
- *
- * FIX 1 — injectDynamicParcel() now restricts Tabu to the source warehouse.
- *   Previous: candidateAgents was computed but never used; Tabu received a
- *             global snapshot, so parcels for WH-A could distort WH-B routes.
- *   Fixed:   Agents from OTHER warehouses get their FULL remaining route locked
- *             (lockCount = remaining.size()), making Tabu unable to reassign them.
- *             Only agents belonging to the source warehouse are freely reroutable.
- *
- * FIX 2 — checkCapacityLoop() no longer hardcodes WH-0.
- *   Previous: Backup agents always spawned at warehouse 0 regardless of scenario.
- *   Fixed:   Backup spawns at the warehouse whose demand most exceeds its fleet
- *             capacity — the one that actually needs help.
- *
- * FIX 3 — File-mode clearly documented as single-warehouse only.
- *   File loading still assigns all parcels to WH-0. This is correct behaviour
- *   since MapLoader only parses one WAREHOUSE line. Multi-warehouse file support
- *   would require a new map format and is left as a future extension.
- *
- * FIX 4 — getWarehouseById() logs a warning instead of silently falling back.
- *   Previous: invalid IDs silently routed parcels to WH-0 with no log output.
- *   Fixed:   A warning is printed; the fallback is intentional and visible.
- *
- * FIX 5 — candidateAgents is now used to drive the lock calculation.
- *   Previous: the list was built but ignored; all agents were treated equally.
- *   Fixed:   Agents not in candidateAgents receive full-lock protection.
- *
- * ── What is unchanged ─────────────────────────────────────────────────────────
- *   All JADE behaviours, GPS ping, dispatch protocol, manifest lock logic,
- *   standby deployment flow, capacity loop structure, and Tabu call signature
- *   are identical to the original. TabuRoutingEngine and RouteState are NOT
- *   modified.
- *
- * ── Coordinate translation strategy ──────────────────────────────────────────
- *   TabuRoutingEngine hardcodes (50,50) as depot in 6 places.
- *   For warehouse at (wx, wy):
- *     shiftIn(p)  = (p.x + 50 - wx,  p.y + 50 - wy)  → warehouse becomes (50,50)
- *     shiftOut(p) = (p.x - 50 + wx,  p.y - 50 + wy)  → (50,50) becomes warehouse
- *   Tabu always sees a depot at (50,50) and optimizes correctly.
- *   After shift-back, (50,50) nodes in the result become the real warehouse position.
- */
 public class MasterRoutingAgent extends Agent {
 
     // ── ACL constants (unchanged) ─────────────────────────────────────────────

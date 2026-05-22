@@ -15,24 +15,24 @@ import java.util.stream.Collectors;
 
 public class MasterRoutingAgent extends Agent {
 
-    // ── ACL constants (unchanged) ─────────────────────────────────────────────
+    // ACL constants
     public static final String CID_ROUTE    = "vrp-route";
     public static final String CID_TRACKING = "vrp-tracking";
     public static final String CID_DONE     = "vrp-done";
     public static final String CID_CAPACITY = "vrp-capacity";
     private static final String PREFIX_ROUTE = "ROUTE:";
 
-    // ── Spawn modes ───────────────────────────────────────────────────────────
+    // Spawn modes
     public enum SpawnMode { CENTRALIZED, DISTRIBUTED }
 
-    // ── 3-warehouse positions ─────────────────────────────────────────────────
+    // 3-warehouse positions
     private static final int[][] WH_3_POSITIONS = {
             {20, 20},   // WH-0 top-left
             {80, 20},   // WH-1 top-right
             {50, 80}    // WH-2 bottom-centre
     };
 
-    // ── Original state fields (unchanged names) ───────────────────────────────
+    // Original state fields
     private MainWindow  myGui;
     private final TabuRoutingEngine tabuEngine = new TabuRoutingEngine();
     private final List<AID>         fleet      = new ArrayList<>();
@@ -72,7 +72,7 @@ public class MasterRoutingAgent extends Agent {
         myGui.setVisible(true);
         myGui.log("System Booted. Select map source and Prepare Environment.");
 
-        // GPS tracking behaviour (unchanged)
+        // GPS tracking behaviour
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_TRACKING);
@@ -82,7 +82,7 @@ public class MasterRoutingAgent extends Agent {
             }
         });
 
-        // Done signal (unchanged)
+        // Done signal
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_DONE);
@@ -94,7 +94,7 @@ public class MasterRoutingAgent extends Agent {
             }
         });
 
-        // Capacity registration (unchanged logic)
+        // Capacity registration
         addBehaviour(new jade.core.behaviours.CyclicBehaviour() {
             public void action() {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_CAPACITY);
@@ -116,7 +116,7 @@ public class MasterRoutingAgent extends Agent {
         });
     }
 
-    // ── Map preview (unchanged) ───────────────────────────────────────────────
+    // Map preview
 
     public void previewMap(String path) {
         try {
@@ -136,7 +136,7 @@ public class MasterRoutingAgent extends Agent {
         myGui.log("Map cleared. Reverted to random generation.");
     }
 
-    // ── Prepare Environment ───────────────────────────────────────────────────
+    // Prepare Environment
 
     public void prepareEnvironment(int numCustomers, int numAgents,
                                    String mapFilePath,
@@ -181,7 +181,7 @@ public class MasterRoutingAgent extends Agent {
             MapLoader.ParsedData mapData = MapLoader.load(path);
             backupCounter = numAgents;
 
-            // Merge warehouses from file into our warehouse list (if multi-warehouse file)
+            // Merge warehouses from file into our warehouse list
             if (mapData.warehouses.size() > 1) {
                 warehouses.clear();
                 warehouseFleet.clear();
@@ -259,7 +259,7 @@ public class MasterRoutingAgent extends Agent {
         }
     }
 
-    // ── FIX 2: Capacity loop — backup at most-strained warehouse ─────────────
+    // Capacity loop
 
     private void checkCapacityLoop() {
         int currentCapacity = fleetCapacities.values().stream().mapToInt(Integer::intValue).sum();
@@ -310,7 +310,7 @@ public class MasterRoutingAgent extends Agent {
         return worstWhId;
     }
 
-    // ── Plot Routes ───────────────────────────────────────────────────────────
+    // Plot Routes
 
     /**
      * Run Tabu SEPARATELY per warehouse, using coordinate translation.
@@ -384,7 +384,7 @@ public class MasterRoutingAgent extends Agent {
         myGui.enableDispatch();
     }
 
-    // ── Dispatch Fleet ────────────────────────────────────────────────────────
+    // Dispatch Fleet
 
     public void dispatchFleet() {
         myGui.log("--- Dispatching Fleet ---");
@@ -394,7 +394,7 @@ public class MasterRoutingAgent extends Agent {
         myGui.log("Fleet dispatched and moving.");
     }
 
-    // ── FIX 1 + FIX 5: Dynamic Injection — restricted to source warehouse ─────
+    // Dynamic Injection
 
     /**
      * Inject a new parcel mid-operation.
@@ -421,7 +421,7 @@ public class MasterRoutingAgent extends Agent {
                 + " dest=(" + newParcel.getDestination().x + ","
                 + newParcel.getDestination().y + ") from " + srcWh.getName());
 
-        // FIX 5: candidateAgents = agents that BELONG to the source warehouse
+        // candidateAgents = agents that BELONG to the source warehouse
         // These are the only agents Tabu is allowed to reroute freely.
         List<String> candidateAgents = warehouseFleet
                 .getOrDefault(srcWh.getId(), List.of())
@@ -442,7 +442,7 @@ public class MasterRoutingAgent extends Agent {
                 snapshot.insertNode(name, i + 1, remaining.get(i));
             }
 
-            // FIX 1: Agents from OTHER warehouses get a FULL lock.
+            // Agents from OTHER warehouses get a FULL lock.
             //         Tabu cannot touch their routes at all.
             if (!candidateAgents.contains(name)) {
                 lockedPrefixes.put(name, remaining.size());  // ← full lock
@@ -489,7 +489,7 @@ public class MasterRoutingAgent extends Agent {
                 });
     }
 
-    // ── Standby Agent Deployment ──────────────────────────────────────────────
+    // Standby Agent Deployment
 
     /**
      * Deploy a standby (backup) agent at the specified warehouse.
@@ -536,7 +536,7 @@ public class MasterRoutingAgent extends Agent {
                 fleetCapacities, previewNodes, warehouses);
     }
 
-    // ── Dispatch Routes ───────────────────────────────────────────────────────
+    // Dispatch Routes
 
     /**
      * Translate math-space routes into physical stop sequences and send to DAs.
@@ -609,7 +609,7 @@ public class MasterRoutingAgent extends Agent {
         }
     }
 
-    // ── GPS Ping (unchanged) ──────────────────────────────────────────────────
+    // GPS Ping
 
     private void processGpsPing(String agentName, String content) {
         try {
@@ -637,7 +637,7 @@ public class MasterRoutingAgent extends Agent {
         } catch (Exception e) {}
     }
 
-    // ── Spawn helper ──────────────────────────────────────────────────────────
+    // Spawn helper
 
     public void spawnDynamicAgent(String name, int startX, int startY,
                                   int capacity, boolean showGui) {
@@ -653,7 +653,7 @@ public class MasterRoutingAgent extends Agent {
         } catch (Exception e) { myGui.log("Failed to spawn " + name + ": " + e.getMessage()); }
     }
 
-    // ── Coordinate translation helpers ────────────────────────────────────────
+    // Coordinate translation helpers
 
     private RouteState shiftStateIn(RouteState src, int dx, int dy) {
         RouteState r = new RouteState();
@@ -707,13 +707,13 @@ public class MasterRoutingAgent extends Agent {
         return m;
     }
 
-    // ── FIX 4: Warehouse lookup with warning on invalid ID ────────────────────
+    // Warehouse lookup with warning on invalid ID
 
     public Warehouse getWarehouseById(int id) throws IllegalArgumentException {
         for (Warehouse wh : warehouses) {
             if (wh.getId() == id) return wh;
         }
-        // FIX 5: throw instead of silently returning wrong warehouse
+        // throw instead of silently returning wrong warehouse
         throw new IllegalArgumentException(
                 "Warehouse id=" + id + " does not exist. Valid ids: "
                 + warehouses.stream().map(w -> String.valueOf(w.getId()))
@@ -730,7 +730,7 @@ public class MasterRoutingAgent extends Agent {
                 .orElse(new Warehouse(0, 50, 50));
     }
 
-    // ── Public getters for GUI ────────────────────────────────────────────────
+    // Public getters for GUI
     public List<Warehouse>           getWarehouses()          { return warehouses; }
     public Map<String, List<Point>>  getInitialPlannedRoutes(){ return initialPlannedRoutes; }
     public Map<String, List<Point>>  getActualDrivenRoutes()  { return actualDrivenRoutes; }

@@ -1,0 +1,20 @@
+# Multi-warehouse scenario - 2 warehouses, 6 parcels
+# Fleet configuration is handled via GUI
+
+WAREHOUSE 20 20
+WAREHOUSE 80 80
+
+CUSTOMER 1 15 85
+CUSTOMER 2 25 75
+CUSTOMER 3 85 25
+CUSTOMER 4 75 15
+CUSTOMER 5 50 50
+CUSTOMER 6 90 90
+
+# Parcels assigned to nearest warehouse in file format
+PARCEL 1 DEST 1 WH 1
+PARCEL 2 DEST 2 WH 1
+PARCEL 3 DEST 3 WH 2
+PARCEL 4 DEST 4 WH 2
+PARCEL 5 DEST 5 WH 1
+PARCEL 6 DEST 6 WH 2

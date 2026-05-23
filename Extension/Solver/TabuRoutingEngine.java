@@ -29,19 +29,21 @@ public class TabuRoutingEngine {
         }
     }
 
-    // THE FIX: Added 'Consumer<String> logger' to pass live logs back to the GUI
-    public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities, Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength, Set<Point> dynamicNodes, Consumer<String> logger) {
+    public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities,
+                               Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength,
+                               Set<Point> dynamicNodes, Map<String, Point> agentDepots, Consumer<String> logger) {
         RouteState workingState = currentState.cloneState();
 
-        // ==========================================
-        // PHASE 1: Fast Geometric Insertion
-        // ==========================================
         if (newParcel != null) {
             double bestCost = Double.MAX_VALUE;
             String bestAgent = null;
             int bestIndex = -1;
+            Point parcelWarehouse = newParcel.getOriginWarehouse();
 
             for (String agentName : workingState.getRoutes().keySet()) {
+                Point agentDepot = agentDepots.getOrDefault(agentName, new Point(50, 50));
+                if (!agentDepot.equals(parcelWarehouse)) continue;
+
                 List<Point> route = workingState.getRoutes().get(agentName);
                 int lockedCount = lockedPrefixLength.getOrDefault(agentName, 0);
                 int currentLoad = calculateLoad(route, directory);
@@ -52,7 +54,7 @@ public class TabuRoutingEngine {
                     List<Point> testRoute = new ArrayList<>(route);
                     testRoute.add(i, newParcel.getDestination());
 
-                    double cost = calculateRouteCost(testRoute, dynamicNodes);
+                    double cost = calculateRouteCost(testRoute, dynamicNodes, agentDepot);
                     if (cost < bestCost) {
                         bestCost = cost;
                         bestAgent = agentName;
@@ -62,20 +64,18 @@ public class TabuRoutingEngine {
             }
             if (bestAgent != null) {
                 workingState.insertNode(bestAgent, bestIndex, newParcel.getDestination());
-            } else {
-                if (logger != null) logger.accept("TabuEngine ALERT: No capacity found for dynamic parcel " + newParcel.getId() + ". Please deploy a Standby Agent!");
+            } else if (logger != null) {
+                logger.accept("TabuEngine ALERT: No capacity found for dynamic parcel " + newParcel.getId()
+                        + " at warehouse (" + parcelWarehouse.x + "," + parcelWarehouse.y + "). Please deploy a Standby Agent!");
             }
         }
 
-        // ==========================================
-        // PHASE 2: True Tabu Search
-        // ==========================================
         int maxGenerations = 800;
         int tabuTenure = 15;
         Map<Point, Integer> tabuList = new HashMap<>();
 
         RouteState globalBestState = workingState.cloneState();
-        double globalBestCost = calculateTotalCost(globalBestState, dynamicNodes);
+        double globalBestCost = calculateTotalCost(globalBestState, dynamicNodes, agentDepots);
         double currentCost = globalBestCost;
 
         if (logger != null) logger.accept(String.format("TabuEngine: Starting optimization... Initial Route Cost: %.1f", globalBestCost));
@@ -84,24 +84,30 @@ public class TabuRoutingEngine {
             Move bestMove = null;
             double bestMoveDelta = Double.MAX_VALUE;
 
-            // NEIGHBORHOOD 1: RELOCATE
             for (String agentA : workingState.getRoutes().keySet()) {
                 List<Point> routeA = workingState.getRoutes().get(agentA);
                 int lockedA = lockedPrefixLength.getOrDefault(agentA, 0);
+                Point depotA = agentDepots.getOrDefault(agentA, new Point(50, 50));
 
                 for (int i = lockedA + 1; i < routeA.size(); i++) {
                     Point nodeToMove = routeA.get(i);
-                    if (nodeToMove.equals(new Point(50, 50))) continue;
+                    if (nodeToMove.equals(depotA)) continue;
 
-                    int demand = directory.containsKey(nodeToMove) ? directory.get(nodeToMove).getDemand() : 0;
-                    double oldCostA = calculateRouteCost(routeA, dynamicNodes);
+                    Parcel parcel = directory.get(nodeToMove);
+                    if (parcel != null && !parcel.getOriginWarehouse().equals(depotA)) continue;
+
+                    int demand = parcel != null ? parcel.getDemand() : 0;
+                    double oldCostA = calculateRouteCost(routeA, dynamicNodes, depotA);
 
                     List<Point> testRouteA = new ArrayList<>(routeA);
                     testRouteA.remove(i);
-                    double newCostA = calculateRouteCost(testRouteA, dynamicNodes);
+                    double newCostA = calculateRouteCost(testRouteA, dynamicNodes, depotA);
 
                     for (String agentB : workingState.getRoutes().keySet()) {
                         if (agentA.equals(agentB)) continue;
+
+                        Point depotB = agentDepots.getOrDefault(agentB, new Point(50, 50));
+                        if (parcel != null && !parcel.getOriginWarehouse().equals(depotB)) continue;
 
                         List<Point> routeB = workingState.getRoutes().get(agentB);
                         int lockedB = lockedPrefixLength.getOrDefault(agentB, 0);
@@ -109,12 +115,12 @@ public class TabuRoutingEngine {
 
                         if (loadB + demand > capacities.getOrDefault(agentB, 5)) continue;
 
-                        double oldCostB = calculateRouteCost(routeB, dynamicNodes);
+                        double oldCostB = calculateRouteCost(routeB, dynamicNodes, depotB);
 
                         for (int j = lockedB + 1; j <= routeB.size(); j++) {
                             List<Point> testRouteB = new ArrayList<>(routeB);
                             testRouteB.add(j, nodeToMove);
-                            double newCostB = calculateRouteCost(testRouteB, dynamicNodes);
+                            double newCostB = calculateRouteCost(testRouteB, dynamicNodes, depotB);
 
                             double delta = (newCostA + newCostB) - (oldCostA + oldCostB);
                             boolean isTabu = tabuList.getOrDefault(nodeToMove, -1) >= gen;
@@ -129,13 +135,13 @@ public class TabuRoutingEngine {
                 }
             }
 
-            // NEIGHBORHOOD 2: 2-OPT
             for (String agent : workingState.getRoutes().keySet()) {
                 List<Point> route = workingState.getRoutes().get(agent);
                 int locked = lockedPrefixLength.getOrDefault(agent, 0);
+                Point depot = agentDepots.getOrDefault(agent, new Point(50, 50));
 
                 if (route.size() - locked < 2) continue;
-                double oldCost = calculateRouteCost(route, dynamicNodes);
+                double oldCost = calculateRouteCost(route, dynamicNodes, depot);
 
                 for (int i = locked + 1; i < route.size() - 1; i++) {
                     for (int j = i + 1; j < route.size(); j++) {
@@ -148,7 +154,7 @@ public class TabuRoutingEngine {
                             left++; right--;
                         }
 
-                        double newCost = calculateRouteCost(testRoute, dynamicNodes);
+                        double newCost = calculateRouteCost(testRoute, dynamicNodes, depot);
                         double delta = newCost - oldCost;
                         Point node = route.get(i);
 
@@ -191,7 +197,6 @@ public class TabuRoutingEngine {
                 break;
             }
 
-            // Milestone Logging: Don't spam the UI, just show progress drops
             if (gen > 0 && gen % 200 == 0 && logger != null) {
                 logger.accept(String.format("TabuEngine: Generation %d reached. Current Best Cost: %.1f", gen, globalBestCost));
             }
@@ -209,17 +214,16 @@ public class TabuRoutingEngine {
         return load;
     }
 
-    private double calculateRouteCost(List<Point> route, Set<Point> dynamicNodes) {
+    private double calculateRouteCost(List<Point> route, Set<Point> dynamicNodes, Point depot) {
         if (route.isEmpty()) return 0;
         double cost = 0;
         boolean hasInventory = false;
-        Point depot = new Point(50, 50);
 
         if (route.get(0).equals(depot)) hasInventory = true;
 
         for (int i = 0; i < route.size() - 1; i++) {
             Point current = route.get(i);
-            Point next = route.get(i+1);
+            Point next = route.get(i + 1);
 
             if (current.equals(depot)) hasInventory = true;
 
@@ -238,10 +242,11 @@ public class TabuRoutingEngine {
         return cost;
     }
 
-    private double calculateTotalCost(RouteState state, Set<Point> dynamicNodes) {
+    private double calculateTotalCost(RouteState state, Set<Point> dynamicNodes, Map<String, Point> agentDepots) {
         double total = 0;
-        for (List<Point> route : state.getRoutes().values()) {
-            total += calculateRouteCost(route, dynamicNodes);
+        for (Map.Entry<String, List<Point>> entry : state.getRoutes().entrySet()) {
+            Point depot = agentDepots.getOrDefault(entry.getKey(), new Point(50, 50));
+            total += calculateRouteCost(entry.getValue(), dynamicNodes, depot);
         }
         return total;
     }

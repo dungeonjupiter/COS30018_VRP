@@ -236,7 +236,7 @@ public class TrackerPanel extends JPanel {
                     if (parcelDir.containsKey(p)) currentLoad += parcelDir.get(p).getDemand();
                 }
             }
-            String whTag = "WH-" + agentWhIds.getOrDefault(name, 0);
+            String whTag = Warehouse.displayName(agentWhIds.getOrDefault(name, 0));
             g2d.setColor(c);
             g2d.fillRect(20, ly - 9, 10, 10);
             g2d.setColor(Color.WHITE);

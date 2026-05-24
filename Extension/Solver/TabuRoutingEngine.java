@@ -44,12 +44,12 @@ public class TabuRoutingEngine {
                 List<Point> route = workingState.getRoutes().get(agentName);
                 int lockedCount = Math.max(1, lockedPrefixLength.getOrDefault(agentName, 0));
 
-                int currentLoad = calculateLoad(route, directory);
-                if (currentLoad + newParcel.getDemand() > capacities.getOrDefault(agentName, 5)) continue;
+                int cap = capacities.getOrDefault(agentName, 5);
 
                 for (int i = lockedCount; i <= route.size(); i++) {
                     List<Point> testRoute = new ArrayList<>(route);
                     testRoute.add(i, newParcel.getDestination());
+                    if (maxLoadOnRoute(testRoute, directory) > cap) continue;
 
                     // Use the upgraded cost function
                     double cost = calculateRouteCost(testRoute, dynamicNodes);
@@ -104,14 +104,14 @@ public class TabuRoutingEngine {
                         List<Point> routeB = workingState.getRoutes().get(agentB);
                         int lockedB = Math.max(1, lockedPrefixLength.getOrDefault(agentB, 0));
 
-                        int loadB = calculateLoad(routeB, directory);
-                        if (loadB + demand > capacities.getOrDefault(agentB, 5)) continue;
+                        int capB = capacities.getOrDefault(agentB, 5);
 
                         double oldCostB = calculateRouteCost(routeB, dynamicNodes);
 
                         for (int j = lockedB; j <= routeB.size(); j++) {
                             List<Point> testRouteB = new ArrayList<>(routeB);
                             testRouteB.add(j, nodeToMove);
+                            if (maxLoadOnRoute(testRouteB, directory) > capB) continue;
                             double newCostB = calculateRouteCost(testRouteB, dynamicNodes);
 
                             double delta = (newCostA + newCostB) - (oldCostA + oldCostB);
@@ -194,12 +194,30 @@ public class TabuRoutingEngine {
         return globalBestState;
     }
 
-    private int calculateLoad(List<Point> route, Map<Point, Parcel> directory) {
+    /** Peak load along the route; load resets when passing the virtual depot (50,50). */
+    private int maxLoadOnRoute(List<Point> route, Map<Point, Parcel> directory) {
         int load = 0;
+        int peak = 0;
+        Point depot = new Point(50, 50);
         for (Point p : route) {
-            if (directory.containsKey(p)) load += directory.get(p).getDemand();
+            if (p.equals(depot)) {
+                load = 0;
+            } else if (directory.containsKey(p)) {
+                load += directory.get(p).getDemand();
+                peak = Math.max(peak, load);
+            }
         }
-        return load;
+        return peak;
+    }
+
+    public boolean routeContainsDestination(RouteState state, Point dest) {
+        if (state == null || dest == null) return false;
+        for (List<Point> route : state.getRoutes().values()) {
+            for (Point p : route) {
+                if (p.equals(dest)) return true;
+            }
+        }
+        return false;
     }
 
     // THE MAGIC FIX: This cost function now "sees" the forced Depot detours

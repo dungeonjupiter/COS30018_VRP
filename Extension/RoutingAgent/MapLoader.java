@@ -90,12 +90,16 @@ public class MapLoader {
 
         for (int[] raw : rawParcels) {
             Point destPt = customerMap.get(raw[2]);
-            if (destPt == null) continue;
+            if (destPt == null) {
+                System.err.println("MapLoader: parcel P" + raw[0]
+                        + " references unknown customer " + raw[2]);
+                continue;
+            }
             int resolvedWhId = raw[1];
             if (!warehouseMap.containsKey(resolvedWhId)) {
                 resolvedWhId = nearestWarehouseId(destPt, warehouseMap);
                 System.err.println("MapLoader: parcel P" + raw[0]
-                        + " unknown warehouse " + raw[1] + " -> nearest WH-" + resolvedWhId);
+                        + " unknown warehouse " + raw[1] + " -> nearest " + Warehouse.displayName(resolvedWhId));
             }
             data.parcels.add(new Parcel("P" + raw[0], destPt.x, destPt.y, 1, resolvedWhId));
         }

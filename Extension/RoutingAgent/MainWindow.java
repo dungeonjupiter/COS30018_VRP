@@ -6,6 +6,7 @@ import java.awt.*;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,26 @@ public class MainWindow extends JFrame {
     private String            selectedMapPath = "RANDOM";
     private JComboBox<String> numWarehousesBox;
     private JRadioButton      centralizedRb, distributedRb;
+    private JPanel            customWhPanel;
+    private JPanel            warehouseRowsPanel;
+    private final List<WarehouseRow> warehouseRows = new ArrayList<>();
+    private JButton           addWarehouseBtn, presetTriangleBtn;
+
+    private static final int MIN_MULTI_WAREHOUSES = 2;
+    private static final int MAX_WAREHOUSES       = 20;
+
+    private static final int[][] PRESET_TRIANGLE = {
+            {20, 20}, {80, 20}, {50, 80}
+    };
+
+    private static class WarehouseRow {
+        final JLabel     label;
+        final JTextField xField, yField;
+        final JPanel     panel;
+        WarehouseRow(JLabel label, JTextField xField, JTextField yField, JPanel panel) {
+            this.label = label; this.xField = xField; this.yField = yField; this.panel = panel;
+        }
+    }
 
     // Dynamic tab
     private JTextField        parcelXField, parcelYField;
@@ -101,15 +122,17 @@ public class MainWindow extends JFrame {
         tab.add(sectionLabel("Warehouse Settings"));
         numWarehousesBox = new JComboBox<>(new String[]{
                 "1 Warehouse  (Base Mode)",
-                "3 Warehouses  (Multi-Depot)"});
+                "Multiple Warehouses  (add X,Y below)"});
         numWarehousesBox.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
         tab.add(numWarehousesBox); tab.add(vgap(6));
-        centralizedRb = new JRadioButton("Centralized — all agents at WH-0");
+        centralizedRb = new JRadioButton("Centralized — all agents at WH-1");
         distributedRb = new JRadioButton("Distributed — spread agents evenly");
         distributedRb.setSelected(true);
         ButtonGroup bg = new ButtonGroup();
         bg.add(centralizedRb); bg.add(distributedRb);
-        tab.add(centralizedRb); tab.add(distributedRb); tab.add(vgap(14));
+        tab.add(centralizedRb); tab.add(distributedRb); tab.add(vgap(8));
+        tab.add(buildCustomWarehousePanel());
+        tab.add(vgap(14));
 
         tab.add(sectionLabel("Initial Fleet"));
         tab.add(row("Customers:", initCustomersField = new JTextField("20")));
@@ -125,7 +148,189 @@ public class MainWindow extends JFrame {
         tab.add(initBtn);    tab.add(vgap(6));
         tab.add(plotRoutesBtn); tab.add(vgap(6));
         tab.add(dispatchBtn);
+        numWarehousesBox.addActionListener(e -> updateCustomWhPanelVisibility());
+        updateCustomWhPanelVisibility();
         return tab;
+    }
+
+    private JPanel buildCustomWarehousePanel() {
+        customWhPanel = new JPanel();
+        customWhPanel.setLayout(new BoxLayout(customWhPanel, BoxLayout.Y_AXIS));
+        customWhPanel.setAlignmentX(LEFT_ALIGNMENT);
+        customWhPanel.setBorder(BorderFactory.createTitledBorder("Warehouses (X, Y)"));
+
+        warehouseRowsPanel = new JPanel();
+        warehouseRowsPanel.setLayout(new BoxLayout(warehouseRowsPanel, BoxLayout.Y_AXIS));
+        warehouseRowsPanel.setAlignmentX(LEFT_ALIGNMENT);
+
+        JPanel header = new JPanel(new GridBagLayout());
+        header.setAlignmentX(LEFT_ALIGNMENT);
+        header.setMaximumSize(new Dimension(Integer.MAX_VALUE, 20));
+        addWhGridCell(header, new JLabel(""), 0, 0, 0, GridBagConstraints.WEST);
+        JLabel xHdr = new JLabel("X");
+        xHdr.setHorizontalAlignment(SwingConstants.CENTER);
+        addWhGridCell(header, xHdr, 1, 0, 0.5, GridBagConstraints.CENTER);
+        JLabel yHdr = new JLabel("Y");
+        yHdr.setHorizontalAlignment(SwingConstants.CENTER);
+        addWhGridCell(header, yHdr, 2, 0, 0.5, GridBagConstraints.CENTER);
+        addWhGridCell(header, new JLabel(""), 3, 0, 0, GridBagConstraints.EAST);
+        customWhPanel.add(header);
+
+        JScrollPane scroll = new JScrollPane(warehouseRowsPanel);
+        scroll.setAlignmentX(LEFT_ALIGNMENT);
+        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 120));
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        customWhPanel.add(scroll);
+        customWhPanel.add(vgap(4));
+
+        JPanel btnRow = new JPanel(new GridLayout(1, 2, 4, 0));
+        btnRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        btnRow.setAlignmentX(LEFT_ALIGNMENT);
+        addWarehouseBtn = new JButton("+ Add");
+        addWarehouseBtn.setToolTipText("Add another warehouse");
+        presetTriangleBtn = new JButton("Preset");
+        presetTriangleBtn.setToolTipText("Load default 3-warehouse triangle");
+        btnRow.add(addWarehouseBtn);
+        btnRow.add(presetTriangleBtn);
+        customWhPanel.add(btnRow);
+
+        addWarehouseBtn.addActionListener(e -> {
+            if (warehouseRows.size() >= MAX_WAREHOUSES) {
+                JOptionPane.showMessageDialog(this,
+                        "Maximum " + MAX_WAREHOUSES + " warehouses.");
+                return;
+            }
+            addWarehouseRow(50, 50);
+        });
+        presetTriangleBtn.addActionListener(e -> loadPresetTriangle());
+
+        loadPresetTriangle();
+
+        JLabel hint = new JLabel("<html><i>Coords 0–100. Min " + MIN_MULTI_WAREHOUSES
+                + " WH. File maps override.</i></html>");
+        hint.setFont(new Font("SansSerif", Font.PLAIN, 10));
+        hint.setForeground(new Color(100, 100, 100));
+        hint.setAlignmentX(LEFT_ALIGNMENT);
+        customWhPanel.add(vgap(4));
+        customWhPanel.add(hint);
+
+        return customWhPanel;
+    }
+
+    private void loadPresetTriangle() {
+        clearWarehouseRows();
+        for (int[] p : PRESET_TRIANGLE) addWarehouseRow(p[0], p[1]);
+    }
+
+    private void clearWarehouseRows() {
+        warehouseRows.clear();
+        warehouseRowsPanel.removeAll();
+    }
+
+    private static void addWhGridCell(JPanel panel, Component c, int col, int row,
+                                      double weightx, int anchor) {
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = col;
+        gbc.gridy = row;
+        gbc.weightx = weightx;
+        gbc.weighty = 0;
+        gbc.insets = new Insets(1, 2, 1, 2);
+        gbc.fill = (weightx > 0) ? GridBagConstraints.HORIZONTAL : GridBagConstraints.NONE;
+        gbc.anchor = anchor;
+        panel.add(c, gbc);
+    }
+
+    private void addWarehouseRow(int x, int y) {
+        int index = warehouseRows.size();
+        JLabel lbl = new JLabel(Warehouse.displayName(index));
+        lbl.setPreferredSize(new Dimension(36, 22));
+
+        JTextField xField = compactCoordField(x);
+        JTextField yField = compactCoordField(y);
+
+        JButton removeBtn = new JButton("×");
+        removeBtn.setMargin(new Insets(0, 2, 0, 2));
+        removeBtn.setPreferredSize(new Dimension(26, 22));
+        removeBtn.setToolTipText("Remove warehouse");
+
+        JPanel row = new JPanel(new GridBagLayout());
+        row.setAlignmentX(LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 26));
+        addWhGridCell(row, lbl, 0, 0, 0, GridBagConstraints.WEST);
+        addWhGridCell(row, xField, 1, 0, 1, GridBagConstraints.CENTER);
+        addWhGridCell(row, yField, 2, 0, 1, GridBagConstraints.CENTER);
+        addWhGridCell(row, removeBtn, 3, 0, 0, GridBagConstraints.EAST);
+
+        WarehouseRow entry = new WarehouseRow(lbl, xField, yField, row);
+        warehouseRows.add(entry);
+        warehouseRowsPanel.add(row);
+
+        removeBtn.addActionListener(e -> removeWarehouseRow(entry));
+        renumberWarehouseLabels();
+        warehouseRowsPanel.revalidate();
+        warehouseRowsPanel.repaint();
+    }
+
+    private void removeWarehouseRow(WarehouseRow entry) {
+        if (warehouseRows.size() <= MIN_MULTI_WAREHOUSES) {
+            JOptionPane.showMessageDialog(this,
+                    "Need at least " + MIN_MULTI_WAREHOUSES + " warehouses in multi-depot mode.");
+            return;
+        }
+        warehouseRows.remove(entry);
+        warehouseRowsPanel.remove(entry.panel);
+        renumberWarehouseLabels();
+        warehouseRowsPanel.revalidate();
+        warehouseRowsPanel.repaint();
+    }
+
+    private static JTextField compactCoordField(int value) {
+        JTextField f = new JTextField(String.valueOf(value), 3);
+        f.setHorizontalAlignment(SwingConstants.CENTER);
+        f.setPreferredSize(new Dimension(42, 22));
+        f.setMaximumSize(new Dimension(52, 22));
+        return f;
+    }
+
+    private void renumberWarehouseLabels() {
+        for (int i = 0; i < warehouseRows.size(); i++)
+            warehouseRows.get(i).label.setText(Warehouse.displayName(i));
+    }
+
+    private void updateCustomWhPanelVisibility() {
+        boolean multi = numWarehousesBox.getSelectedIndex() == 1;
+        customWhPanel.setVisible(multi);
+        boolean mapLoaded = !"RANDOM".equals(selectedMapPath);
+        boolean editable = multi && !mapLoaded;
+        addWarehouseBtn.setEnabled(editable);
+        presetTriangleBtn.setEnabled(editable);
+        for (WarehouseRow wr : warehouseRows) {
+            wr.xField.setEnabled(editable);
+            wr.yField.setEnabled(editable);
+            for (Component c : wr.panel.getComponents()) {
+                if (c instanceof JButton) c.setEnabled(editable);
+            }
+        }
+        if (multi && warehouseRows.isEmpty()) loadPresetTriangle();
+        if (customWhPanel.getParent() != null) {
+            customWhPanel.getParent().revalidate();
+            customWhPanel.getParent().repaint();
+        }
+    }
+
+    private int[][] readCustomWarehouseCoords() throws NumberFormatException {
+        int[][] coords = new int[warehouseRows.size()][2];
+        for (int i = 0; i < warehouseRows.size(); i++) {
+            WarehouseRow wr = warehouseRows.get(i);
+            int x = Integer.parseInt(wr.xField.getText().trim());
+            int y = Integer.parseInt(wr.yField.getText().trim());
+            if (x < 0 || x > 100 || y < 0 || y > 100) throw new NumberFormatException();
+            coords[i][0] = x;
+            coords[i][1] = y;
+        }
+        return coords;
     }
 
     // ── Dynamic Tab ───────────────────────────────────────────────────────────
@@ -137,7 +342,7 @@ public class MainWindow extends JFrame {
 
         // Parcel injection
         dynamicTab.add(sectionLabel("Inject Dynamic Parcel"));
-        parcelWhBox = new JComboBox<>(new String[]{"Auto (Nearest)", "WH-0"});
+        parcelWhBox = new JComboBox<>(new String[]{"Auto (Nearest)", "WH-1"});
         parcelWhBox.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
         dynamicTab.add(row("Source Warehouse:", parcelWhBox));
         dynamicTab.add(vgap(4));
@@ -188,6 +393,7 @@ public class MainWindow extends JFrame {
                 loadMapBtn.setEnabled(false);
                 clearMapBtn.setEnabled(true);
                 myAgent.previewMap(selectedMapPath);
+                updateCustomWhPanelVisibility();
             }
         });
 
@@ -198,23 +404,45 @@ public class MainWindow extends JFrame {
             loadMapBtn.setEnabled(true);
             clearMapBtn.setEnabled(false);
             myAgent.clearPreview();
+            updateCustomWhPanelVisibility();
         });
 
         initBtn.addActionListener(e -> {
             try {
                 int cust   = Integer.parseInt(initCustomersField.getText().trim());
                 int agents = Integer.parseInt(initAgentsField.getText().trim());
-                int numWh  = numWarehousesBox.getSelectedIndex() == 0 ? 1 : 3;
+                boolean singleWh = numWarehousesBox.getSelectedIndex() == 0;
+                int numWh = 1;
+                int[][] customWh = null;
+                if (!singleWh) {
+                    if ("RANDOM".equals(selectedMapPath)) {
+                        customWh = readCustomWarehouseCoords();
+                        numWh = customWh.length;
+                        if (numWh < MIN_MULTI_WAREHOUSES) {
+                            JOptionPane.showMessageDialog(this,
+                                    "Add at least " + MIN_MULTI_WAREHOUSES + " warehouses (X, Y).");
+                            return;
+                        }
+                        if (hasDuplicateWarehouseCoords(customWh)) {
+                            JOptionPane.showMessageDialog(this,
+                                    "Each warehouse needs a unique (X, Y) position.");
+                            return;
+                        }
+                    } else {
+                        numWh = MIN_MULTI_WAREHOUSES;
+                    }
+                }
                 MasterRoutingAgent.SpawnMode mode = distributedRb.isSelected()
                         ? MasterRoutingAgent.SpawnMode.DISTRIBUTED
                         : MasterRoutingAgent.SpawnMode.CENTRALIZED;
                 initBtn.setEnabled(false);
                 loadMapBtn.setEnabled(false);
                 clearMapBtn.setEnabled(false);
-                rebuildWhBoxes(numWh);
-                myAgent.prepareEnvironment(cust, agents, selectedMapPath, numWh, mode);
+                myAgent.prepareEnvironment(cust, agents, selectedMapPath, numWh, mode, customWh);
+                rebuildWhBoxes(myAgent.getWarehouses().size());
             } catch (NumberFormatException ex) {
-                JOptionPane.showMessageDialog(this, "Enter valid numbers.");
+                JOptionPane.showMessageDialog(this,
+                        "Enter valid numbers. Warehouse X/Y must be integers from 0 to 100.");
             }
         });
 
@@ -264,6 +492,9 @@ public class MainWindow extends JFrame {
     public void enableSummary()            {
         SwingUtilities.invokeLater(() -> { summaryBtn.setEnabled(true); log("All agents IDLE. Summary ready."); });
     }
+    public void disableSummary()           {
+        SwingUtilities.invokeLater(() -> summaryBtn.setEnabled(false));
+    }
     public void setPhase2Enabled(boolean on) { SwingUtilities.invokeLater(() -> setDynamicEnabled(on)); }
 
     public void log(String msg) {
@@ -301,10 +532,19 @@ public class MainWindow extends JFrame {
         return sel - 1;
     }
 
+    private static boolean hasDuplicateWarehouseCoords(int[][] coords) {
+        for (int i = 0; i < coords.length; i++) {
+            for (int j = i + 1; j < coords.length; j++) {
+                if (coords[i][0] == coords[j][0] && coords[i][1] == coords[j][1]) return true;
+            }
+        }
+        return false;
+    }
+
     private void rebuildWhBoxes(int numWh) {
         parcelWhBox.removeAllItems();
         parcelWhBox.addItem("Auto (Nearest)");
-        for (int i = 0; i < numWh; i++) parcelWhBox.addItem("WH-" + i);
+        for (int i = 0; i < numWh; i++) parcelWhBox.addItem(Warehouse.displayName(i));
     }
 
     private void setDynamicEnabled(boolean on) {

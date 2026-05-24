@@ -10,7 +10,6 @@ import jade.lang.acl.MessageTemplate;
 
 import java.awt.Point;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 public class MasterRoutingAgent extends Agent {
@@ -60,6 +59,9 @@ public class MasterRoutingAgent extends Agent {
     /** warehouse id → parcels assigned to it. */
     private Map<Integer, List<Parcel>> warehouseParcels = new HashMap<>();
 
+    private final Deque<Parcel> dynamicParcelQueue = new ArrayDeque<>();
+    private boolean dynamicRerouteScheduled = false;
+
     // ─────────────────────────────────────────────────────────────────────────
     @Override
     protected void setup() {
@@ -83,8 +85,12 @@ public class MasterRoutingAgent extends Agent {
                 MessageTemplate tpl = MessageTemplate.MatchConversationId(CID_DONE);
                 ACLMessage msg = receive(tpl);
                 if (msg != null) {
-                    activeDrivingAgents.remove(msg.getSender().getLocalName());
-                    if (activeDrivingAgents.isEmpty()) myGui.enableSummary();
+                    String name = msg.getSender().getLocalName();
+                    List<Point> rem = remainingPaths.getOrDefault(name, List.of());
+                    if (rem.isEmpty()) {
+                        activeDrivingAgents.remove(name);
+                    }
+                    tryEnableSummary();
                 } else block();
             }
         });
@@ -97,15 +103,19 @@ public class MasterRoutingAgent extends Agent {
                 if (msg != null) {
                     String name = msg.getSender().getLocalName();
                     try {
-                        int cap = Integer.parseInt(msg.getContent().split(":")[1]);
+                        String[] parts = msg.getContent().split(":", 2);
+                        if (parts.length < 2) throw new NumberFormatException("bad capacity message");
+                        int cap = Integer.parseInt(parts[1].trim());
                         fleetCapacities.put(name, cap);
                         myGui.log(name + " capacity registered: " + cap
-                                + " (WH-" + agentWarehouseId.getOrDefault(name, 0) + ")");
+                                + " (" + Warehouse.displayName(agentWarehouseId.getOrDefault(name, 0)) + ")");
                         if (initPendingAgents > 0) {
                             initPendingAgents--;
                             if (initPendingAgents <= 0) checkCapacityLoop();
                         }
-                    } catch (Exception e) {}
+                    } catch (Exception e) {
+                        myGui.log("WARNING: invalid capacity from " + name + ": " + msg.getContent());
+                    }
                 } else block();
             }
         });
@@ -134,6 +144,17 @@ public class MasterRoutingAgent extends Agent {
     public void prepareEnvironment(int numCustomers, int numAgents,
                                    String mapFilePath,
                                    int numWarehouses, SpawnMode mode) {
+        prepareEnvironment(numCustomers, numAgents, mapFilePath, numWarehouses, mode, null);
+    }
+
+    /**
+     * @param customWarehousePositions optional [whIndex][x,y] for multi-warehouse random mode;
+     *                                 ignored when a map file supplies warehouses
+     */
+    public void prepareEnvironment(int numCustomers, int numAgents,
+                                   String mapFilePath,
+                                   int numWarehouses, SpawnMode mode,
+                                   int[][] customWarehousePositions) {
         this.spawnMode = mode;
         myGui.log("--- Preparing: " + numWarehouses + " warehouse(s), mode=" + mode + " ---");
 
@@ -141,14 +162,32 @@ public class MasterRoutingAgent extends Agent {
         initParcels.clear(); initTotalDemand = 0; previewNodes.clear();
         dynamicDestinations.clear(); agentWarehouseId.clear(); fleet.clear();
         warehouseFleet.clear(); warehouseParcels.clear();
+        fleetCapacities.clear(); currentLocs.clear(); actualDrivenRoutes.clear();
+        remainingPaths.clear(); activeDrivingAgents.clear(); initialPlannedRoutes.clear();
+        parcelDirectory.clear(); plannedBaseState = null; isPhase2Active = false;
+        backupCounter = 0; initPendingAgents = 0;
+        dynamicParcelQueue.clear(); dynamicRerouteScheduled = false;
+        myGui.disableSummary();
 
         // Build warehouses
         warehouses.clear();
         if (numWarehouses == 1) {
             warehouses.add(new Warehouse(0, 50, 50, "Main Depot"));
         } else {
-            for (int i = 0; i < Math.min(numWarehouses, 3); i++) {
-                warehouses.add(new Warehouse(i, WH_3_POSITIONS[i][0], WH_3_POSITIONS[i][1]));
+            int count = (customWarehousePositions != null && customWarehousePositions.length > 0)
+                    ? customWarehousePositions.length
+                    : numWarehouses;
+            for (int i = 0; i < count; i++) {
+                int x = (i < WH_3_POSITIONS.length) ? WH_3_POSITIONS[i][0] : 50;
+                int y = (i < WH_3_POSITIONS.length) ? WH_3_POSITIONS[i][1] : 50;
+                if (customWarehousePositions != null
+                        && i < customWarehousePositions.length
+                        && customWarehousePositions[i] != null
+                        && customWarehousePositions[i].length >= 2) {
+                    x = customWarehousePositions[i][0];
+                    y = customWarehousePositions[i][1];
+                }
+                warehouses.add(new Warehouse(i, x, y));
             }
         }
         for (Warehouse wh : warehouses) {
@@ -156,9 +195,12 @@ public class MasterRoutingAgent extends Agent {
             warehouseParcels.put(wh.getId(), new ArrayList<>());
             myGui.log("  " + wh);
         }
+        if (numWarehouses > 1 && customWarehousePositions != null && mapFilePath.equals("RANDOM")) {
+            myGui.log("Using custom warehouse coordinates from Setup.");
+        }
 
         if (!mapFilePath.equals("RANDOM")) {
-            myGui.log("Note: file mode uses single-warehouse (WH-0 only).");
+            myGui.log("Note: file mode uses single-warehouse (WH-1 only).");
             loadFromFile(mapFilePath, numAgents);
         } else {
             generateRandom(numCustomers, numAgents);
@@ -191,11 +233,11 @@ public class MasterRoutingAgent extends Agent {
                 int whId = p.getSourceWarehouseId();
                 if (!warehouseParcels.containsKey(whId)) {
                     myGui.log("WARNING: parcel " + p.getId()
-                            + " references unknown warehouse " + whId + " — assigning to WH-0.");
+                            + " references unknown warehouse " + whId + " — assigning to WH-1.");
                     whId = 0;
                 }
                 initParcels.add(p);
-                parcelDirectory.put(p.getDestination(), p);
+                registerParcel(p);
                 initTotalDemand += p.getDemand();
                 previewNodes.add(p.getDestination());
                 warehouseParcels.get(whId).add(p);
@@ -226,7 +268,7 @@ public class MasterRoutingAgent extends Agent {
             Warehouse nearest = nearestWarehouse(pt);
             Parcel p = new Parcel("P" + count, x, y, 1, nearest.getId());
             initParcels.add(p);
-            parcelDirectory.put(p.getDestination(), p);
+            registerParcel(p);
             initTotalDemand += p.getDemand();
             previewNodes.add(p.getDestination());
             warehouseParcels.get(nearest.getId()).add(p);
@@ -262,7 +304,7 @@ public class MasterRoutingAgent extends Agent {
             spawnDynamicAgent(name, sx, sy, 5, true);
             activeDrivingAgents.add(name);
             currentLocs.put(name, new Point(sx, sy));
-            myGui.log("  Spawned " + name + " → WH-" + whId + " at (" + sx + "," + sy + ")");
+            myGui.log("  Spawned " + name + " → " + Warehouse.displayName(whId) + " at (" + sx + "," + sy + ")");
         }
     }
 
@@ -273,20 +315,23 @@ public class MasterRoutingAgent extends Agent {
             backupCounter++;
             String backupName = "DA" + backupCounter;
 
-            // Find the warehouse whose demand most exceeds its agents' total capacity
             int targetWhId = findMostStrainedWarehouse();
+            if (warehouseDeficit(targetWhId) <= 0) {
+                targetWhId = 0;
+            }
             Warehouse targetWh = getWarehouseById(targetWhId);
 
             myGui.log("Alert: Insufficient capacity (" + currentCapacity + " < "
                     + initTotalDemand + "). Spawning backup " + backupName
                     + " at " + targetWh.getName() + ".");
 
-            spawnDynamicAgent(backupName, targetWh.getX(), targetWh.getY(), 5, true);
+            spawnDynamicAgent(backupName, targetWh.getX(), targetWh.getY(), 5, false);
+            fleetCapacities.put(backupName, 5);
             activeDrivingAgents.add(backupName);
             currentLocs.put(backupName, targetWh.getPos());
             agentWarehouseId.put(backupName, targetWhId);
             warehouseFleet.get(targetWhId).add(new AID(backupName, AID.ISLOCALNAME));
-            initPendingAgents = 1;
+            checkCapacityLoop();
         } else {
             myGui.log("Capacity check passed (" + currentCapacity
                     + " ≥ " + initTotalDemand + "). Click '2. Plot Routes'.");
@@ -295,9 +340,20 @@ public class MasterRoutingAgent extends Agent {
     }
 
     /** Returns the warehouse ID whose parcel demand most exceeds its agents' capacity. */
+    private int warehouseDeficit(int whId) {
+        int demand   = warehouseParcels.getOrDefault(whId, List.of())
+                                       .stream().mapToInt(Parcel::getDemand).sum();
+        int capacity = warehouseFleet.getOrDefault(whId, List.of())
+                                     .stream()
+                                     .mapToInt(aid -> fleetCapacities
+                                             .getOrDefault(aid.getLocalName(), 0))
+                                     .sum();
+        return demand - capacity;
+    }
+
     private int findMostStrainedWarehouse() {
-        int worstWhId   = 0;
-        int worstDeficit = Integer.MIN_VALUE;
+        int worstWhId    = 0;
+        int worstDeficit = 0;
 
         for (Warehouse wh : warehouses) {
             int demand   = warehouseParcels.getOrDefault(wh.getId(), List.of())
@@ -314,6 +370,25 @@ public class MasterRoutingAgent extends Agent {
             }
         }
         return worstWhId;
+    }
+
+    private void registerParcel(Parcel p) {
+        Point dest = p.getDestination();
+        Parcel existing = parcelDirectory.get(dest);
+        if (existing != null && !existing.getId().equals(p.getId())) {
+            myGui.log("WARNING: " + p.getId() + " overlaps coords with " + existing.getId()
+                    + " at (" + dest.x + "," + dest.y + ")");
+        }
+        parcelDirectory.put(dest, p);
+    }
+
+    private void tryEnableSummary() {
+        if (!activeDrivingAgents.isEmpty()) return;
+        if (dynamicRerouteScheduled || !dynamicParcelQueue.isEmpty()) return;
+        for (List<Point> rem : remainingPaths.values()) {
+            if (rem != null && !rem.isEmpty()) return;
+        }
+        myGui.enableSummary();
     }
 
 
@@ -447,8 +522,6 @@ public class MasterRoutingAgent extends Agent {
      */
     public void injectDynamicParcel(Parcel newParcel) {
         if (!isPhase2Active) return;
-        parcelDirectory.put(newParcel.getDestination(), newParcel);
-        dynamicDestinations.add(newParcel.getDestination());
 
         Warehouse srcWh;
         try {
@@ -457,12 +530,43 @@ public class MasterRoutingAgent extends Agent {
             myGui.log("ERROR: " + e.getMessage() + " — parcel dropped.");
             return;
         }
+
+        registerParcel(newParcel);
+        dynamicDestinations.add(newParcel.getDestination());
         warehouseParcels.get(srcWh.getId()).add(newParcel);
+        myGui.disableSummary();
 
         myGui.log("Dynamic Request: " + newParcel.getId()
                 + " dest=(" + newParcel.getDestination().x + ","
                 + newParcel.getDestination().y + ") from " + srcWh.getName());
-        // These are the only agents Tabu is allowed to reroute freely.
+
+        dynamicParcelQueue.addLast(newParcel);
+        scheduleDynamicReroute();
+    }
+
+    private void scheduleDynamicReroute() {
+        if (dynamicRerouteScheduled) return;
+        dynamicRerouteScheduled = true;
+        addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
+            public void action() {
+                try {
+                    while (!dynamicParcelQueue.isEmpty()) {
+                        runDynamicReroute(dynamicParcelQueue.pollFirst());
+                    }
+                } catch (Exception e) {
+                    myGui.log("ERROR during dynamic reroute: " + e.getMessage());
+                    e.printStackTrace();
+                } finally {
+                    dynamicRerouteScheduled = false;
+                    tryEnableSummary();
+                }
+            }
+        });
+    }
+
+    private void runDynamicReroute(Parcel newParcel) {
+        Warehouse srcWh = getWarehouseById(newParcel.getSourceWarehouseId());
+
         List<String> candidateAgents = warehouseFleet
                 .getOrDefault(srcWh.getId(), List.of())
                 .stream()
@@ -481,17 +585,15 @@ public class MasterRoutingAgent extends Agent {
             for (int i = 0; i < remaining.size(); i++) {
                 snapshot.insertNode(name, i + 1, remaining.get(i));
             }
-            //         Tabu cannot touch their routes at all.
             if (!candidateAgents.contains(name)) {
-                lockedPrefixes.put(name, remaining.size());  // ← full lock
+                lockedPrefixes.put(name, remaining.size());
                 continue;
             }
 
-            // For same-warehouse agents: apply the original manifest lock logic
             int lockCount = 0;
             if (!remaining.isEmpty()) {
-                Point agentWhPos    = getAgentWarehouse(name).getPos();
-                int   nextDepotIdx  = remaining.indexOf(agentWhPos);
+                Point agentWhPos   = getAgentWarehouse(name).getPos();
+                int   nextDepotIdx = remaining.indexOf(agentWhPos);
                 lockCount = (nextDepotIdx == -1) ? remaining.size() : nextDepotIdx;
                 lockCount = Math.max(lockCount, 1);
                 if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
@@ -502,29 +604,30 @@ public class MasterRoutingAgent extends Agent {
         }
 
         Set<Point> dynamicSnapshot = new HashSet<>(dynamicDestinations);
-
-        // Coordinate-shift the whole snapshot into source-warehouse Tabu space
         int dx = 50 - srcWh.getX();
         int dy = 50 - srcWh.getY();
 
-        RouteState           shiftedSnapshot = shiftStateIn(snapshot, dx, dy);
-        Parcel               shiftedParcel   = shiftParcel(newParcel, dx, dy);
-        Map<Point, Parcel>   shiftedDir      = buildShiftedDirectory(dx, dy);
-        Set<Point>           shiftedDynamic  = dynamicSnapshot.stream()
+        RouteState         shiftedSnapshot = shiftStateIn(snapshot, dx, dy);
+        Parcel             shiftedParcel   = shiftParcel(newParcel, dx, dy);
+        Map<Point, Parcel> shiftedDir      = buildShiftedDirectory(dx, dy);
+        Set<Point>         shiftedDynamic  = dynamicSnapshot.stream()
                 .map(p -> new Point(p.x + dx, p.y + dy))
                 .collect(Collectors.toSet());
 
-        CompletableFuture
-                .supplyAsync(() -> tabuEngine.optimize(
-                        shiftedSnapshot, shiftedParcel,
-                        fleetCapacities, shiftedDir,
-                        lockedPrefixes, shiftedDynamic))
-                .thenAccept(optimized -> {
-                    RouteState real = shiftStateBack(optimized, -dx, -dy, srcWh.getPos());
-                    addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
-                        public void action() { dispatchRoutes(real, newParcel); }
-                    });
-                });
+        RouteState optimized = tabuEngine.optimize(
+                shiftedSnapshot, shiftedParcel,
+                fleetCapacities, shiftedDir,
+                lockedPrefixes, shiftedDynamic);
+
+        Point shiftedDest = shiftedParcel.getDestination();
+        if (!tabuEngine.routeContainsDestination(optimized, shiftedDest)) {
+            myGui.log("WARNING: Tabu could not place " + newParcel.getId()
+                    + " — no feasible route with current capacity.");
+            return;
+        }
+
+        RouteState real = shiftStateBack(optimized, -dx, -dy, srcWh.getPos());
+        dispatchRoutes(real, newParcel);
     }
 
 
@@ -607,14 +710,12 @@ public class MasterRoutingAgent extends Agent {
                     continue;
                 }
 
-                if (dynamicDestinations.contains(p)) {
-                    Parcel info    = parcelDirectory.get(p);
-                    Point srcWhPos = (info != null)
-                            ? getWarehouseById(info.getSourceWarehouseId()).getPos()
-                            : agentWhPos;
+                Parcel info = parcelDirectory.get(p);
+                if (info != null) {
+                    Point srcWhPos = getWarehouseById(info.getSourceWarehouseId()).getPos();
                     if (!visitedWarehouses.contains(srcWhPos)) {
                         if (physicalStops.isEmpty()
-                                || !physicalStops.get(physicalStops.size()-1).equals(srcWhPos)) {
+                                || !physicalStops.get(physicalStops.size() - 1).equals(srcWhPos)) {
                             physicalStops.add(new Point(srcWhPos));
                         }
                         visitedWarehouses.add(srcWhPos);
@@ -639,6 +740,12 @@ public class MasterRoutingAgent extends Agent {
             m.setConversationId(CID_ROUTE);
             m.setContent(sb.toString());
             send(m);
+
+            if (!physicalStops.isEmpty()) {
+                activeDrivingAgents.add(name);
+                remainingPaths.put(name, new ArrayList<>(physicalStops));
+                myGui.disableSummary();
+            }
         }
     }
 
@@ -666,7 +773,9 @@ public class MasterRoutingAgent extends Agent {
             remainingPaths.put(agentName, rem);
             myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths,
                     fleetCapacities, previewNodes, warehouses);
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            myGui.log("WARNING: bad GPS from " + agentName + ": " + content);
+        }
     }
 
 

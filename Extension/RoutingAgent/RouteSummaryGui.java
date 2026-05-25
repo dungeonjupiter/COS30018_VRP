@@ -64,28 +64,47 @@ public class RouteSummaryGui extends JFrame {
         private static final int OFFSET_Y = 60;
         private static final int SCALE = 6;
 
+        // The Proximity Snapper
         private List<Point> smoothActualRoute(List<Point> rawGps) {
             if (rawGps == null || rawGps.isEmpty()) return rawGps;
             List<Point> smoothed = new ArrayList<>();
-            smoothed.add(rawGps.get(0));
+            smoothed.add(depot);
 
-            for (int i = 1; i < rawGps.size() - 1; i++) {
-                Point p = rawGps.get(i);
-                if (p.equals(depot) || (directory != null && directory.containsKey(p))) {
-                    if (!smoothed.get(smoothed.size() - 1).equals(p)) smoothed.add(p);
+            // Create a master list of all valid physical destinations
+            List<Point> validStops = new ArrayList<>();
+            validStops.add(depot);
+            if (directory != null) validStops.addAll(directory.keySet());
+
+            // Scan the raw GPS pings
+            for (Point ping : rawGps) {
+                for (Point stop : validStops) {
+                    // If the truck pings within 6 units (its max speed step), snap to the exact stop!
+                    if (ping.distance(stop) <= 6.0) {
+                        if (!smoothed.get(smoothed.size() - 1).equals(stop)) {
+                            smoothed.add(stop);
+                        }
+                    }
                 }
             }
 
-            Point last = rawGps.get(rawGps.size() - 1);
-            if (!smoothed.get(smoothed.size() - 1).equals(last)) smoothed.add(last);
+            // Ensure route closes at the depot if it's the end of the day
+            if (!smoothed.get(smoothed.size() - 1).equals(depot)) {
+                smoothed.add(depot);
+            }
             return smoothed;
         }
 
         private double calculateDistance(List<Point> path) {
             if (path == null || path.size() < 2) return 0.0;
             double distance = 0.0;
+
             for (int i = 0; i < path.size() - 1; i++) {
                 distance += path.get(i).distance(path.get(i+1));
+            }
+
+            Point lastNode = path.get(path.size() - 1);
+            if (!lastNode.equals(depot)) {
+                distance += lastNode.distance(depot);
             }
             return distance;
         }
@@ -95,6 +114,7 @@ public class RouteSummaryGui extends JFrame {
             if (routes == null) return 0.0;
             double total = 0.0;
             for (List<Point> path : routes.values()) {
+                // Smooth the actual route to snap the exact waypoints and fix the integer decay
                 List<Point> processedPath = isActual ? smoothActualRoute(path) : path;
                 total += calculateDistance(processedPath);
             }
@@ -175,11 +195,9 @@ public class RouteSummaryGui extends JFrame {
             Map<String, List<Point>> activeMap = showingInitial ? initialRoutes : actualRoutes;
             int numAgents = (activeMap != null) ? activeMap.size() : 0;
 
-            // Calculate total distances
             double totalPlanned = calculateFleetTotalDistance(initialRoutes, false);
             double totalActual = calculateFleetTotalDistance(actualRoutes, true);
 
-            // Expand box height to fit the new totals at the bottom
             int boxHeight = 50 + (numAgents * 20) + 55;
             g2d.setColor(new Color(20, 20, 25, 210));
             g2d.fillRoundRect(10, 10, 220, boxHeight, 15, 15);
@@ -201,26 +219,26 @@ public class RouteSummaryGui extends JFrame {
             if (activeMap != null) {
                 int idx = 0;
                 for (String name : activeMap.keySet()) {
-                    List<Point> path = activeMap.get(name);
-                    if (!showingInitial) path = smoothActualRoute(path);
+                    // 1. Get the raw physical path
+                    List<Point> rawPath = activeMap.get(name);
 
-                    double individualDist = calculateDistance(path);
+                    // 2. Calculate the distance using the RAW path
+                    double individualDist = calculateDistance(rawPath);
 
                     ly += 20;
                     g2d.setColor(agentColors[idx % agentColors.length]);
                     g2d.fillRect(20, ly - 9, 10, 10);
                     g2d.setColor(Color.WHITE);
+                    // 3. Print the true physical distance
                     g2d.drawString(String.format("%s Route (Dist: %.1f)", name, individualDist), 35, ly);
                     idx++;
                 }
             }
 
-            // Draw a subtle separator line
             ly += 15;
             g2d.setColor(new Color(100, 100, 110));
             g2d.drawLine(20, ly - 10, 210, ly - 10);
 
-            // Draw the global totals
             g2d.setColor(Color.WHITE);
             g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
             g2d.drawString(String.format("Total Planned Dist: %.1f", totalPlanned), 20, ly);

@@ -12,22 +12,16 @@ import java.util.Map;
 
 public class MapLoader {
     public static class ParsedData {
-        public List<Point> warehouses = new ArrayList<>();
+        public Point warehouse = new Point(50, 50);
         public List<Parcel> parcels = new ArrayList<>();
-
-        public Point getPrimaryWarehouse() {
-            return warehouses.isEmpty() ? new Point(50, 50) : warehouses.get(0);
-        }
     }
 
     public static ParsedData load(String filePath) throws IOException {
         ParsedData data = new ParsedData();
         Map<Integer, Point> customerMap = new HashMap<>();
-        Map<Integer, Point> warehouseMap = new HashMap<>();
 
         try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
             String line;
-            int warehouseCounter = 0;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.startsWith("#")) continue;
@@ -36,10 +30,7 @@ public class MapLoader {
                 try {
                     switch (t[0].toUpperCase()) {
                         case "WAREHOUSE":
-                            warehouseCounter++;
-                            Point wh = new Point((int) Double.parseDouble(t[1]), (int) Double.parseDouble(t[2]));
-                            data.warehouses.add(wh);
-                            warehouseMap.put(warehouseCounter, wh);
+                            data.warehouse = new Point((int) Double.parseDouble(t[1]), (int) Double.parseDouble(t[2]));
                             break;
                         case "CUSTOMER":
                             customerMap.put(Integer.parseInt(t[1]), new Point((int) Double.parseDouble(t[2]), (int) Double.parseDouble(t[3])));
@@ -48,12 +39,8 @@ public class MapLoader {
                             String pid = "P" + t[1];
                             int destId = Integer.parseInt(t[3]);
                             Point dest = customerMap.get(destId);
-                            Point origin = data.getPrimaryWarehouse();
-                            if (t.length >= 6 && t[4].equalsIgnoreCase("WH")) {
-                                origin = warehouseMap.getOrDefault(Integer.parseInt(t[5]), origin);
-                            }
                             if (dest != null) {
-                                data.parcels.add(new Parcel(pid, dest.x, dest.y, 1, origin));
+                                data.parcels.add(new Parcel(pid, dest.x, dest.y, 1));
                             }
                             break;
                     }
@@ -61,9 +48,6 @@ public class MapLoader {
                     System.err.println("MapLoader Warning: Skipping malformed line -> " + line);
                 }
             }
-        }
-        if (data.warehouses.isEmpty()) {
-            data.warehouses.add(new Point(50, 50));
         }
         return data;
     }

@@ -11,7 +11,6 @@ public class RouteSummaryGui extends JFrame {
     private final Map<String, List<Point>> initialRoutes;
     private final Map<String, List<Point>> actualRoutes;
     private final Map<Point, Parcel> directory;
-    private final List<Point> warehouses;
     private boolean showingInitial = false;
 
     private final SummaryPanel mapPanel;
@@ -21,12 +20,11 @@ public class RouteSummaryGui extends JFrame {
             new Color(253, 126, 20), new Color(111, 66, 193), new Color(23, 162, 184)
     };
 
-    public RouteSummaryGui(Map<String, List<Point>> initial, Map<String, List<Point>> actual, Map<Point, Parcel> directory, List<Point> warehouses) {
+    public RouteSummaryGui(Map<String, List<Point>> initial, Map<String, List<Point>> actual, Map<Point, Parcel> directory) {
         super("End of Day Route Summary");
         this.initialRoutes = initial;
         this.actualRoutes = actual;
         this.directory = directory;
-        this.warehouses = warehouses != null && !warehouses.isEmpty() ? warehouses : List.of(new Point(50, 50));
 
         setSize(950, 800); // Widened slightly for the larger legend
         setLayout(new BorderLayout());
@@ -61,16 +59,10 @@ public class RouteSummaryGui extends JFrame {
     }
 
     private class SummaryPanel extends JPanel {
+        private final Point depot = new Point(50, 50);
         private static final int OFFSET_X = 240; // Shifted further right to clear wider legend
         private static final int OFFSET_Y = 60;
         private static final int SCALE = 6;
-
-        private boolean isWarehouse(Point p) {
-            for (Point wh : warehouses) {
-                if (p.equals(wh)) return true;
-            }
-            return false;
-        }
 
         private List<Point> smoothActualRoute(List<Point> rawGps) {
             if (rawGps == null || rawGps.isEmpty()) return rawGps;
@@ -79,7 +71,7 @@ public class RouteSummaryGui extends JFrame {
 
             for (int i = 1; i < rawGps.size() - 1; i++) {
                 Point p = rawGps.get(i);
-                if (isWarehouse(p) || (directory != null && directory.containsKey(p))) {
+                if (p.equals(depot) || (directory != null && directory.containsKey(p))) {
                     if (!smoothed.get(smoothed.size() - 1).equals(p)) smoothed.add(p);
                 }
             }
@@ -148,7 +140,7 @@ public class RouteSummaryGui extends JFrame {
                     boolean isStop = (directory != null && directory.containsKey(currNode));
                     boolean isEnd = (i == path.size() - 1);
 
-                    if (isStop || (!isWarehouse(currNode) && showingInitial)) {
+                    if (isStop || (!currNode.equals(depot) && showingInitial)) {
                         if (currX != prevX || currY != prevY) drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
                         g2d.fillOval(currX - 7, currY - 7, 14, 14);
                         g2d.setColor(Color.WHITE);
@@ -164,10 +156,9 @@ public class RouteSummaryGui extends JFrame {
                 Point furthestNode = path.get(0);
                 double maxDist = -1;
                 for (Point p : path) {
-                    double minWhDist = Double.MAX_VALUE;
-                    for (Point wh : warehouses) minWhDist = Math.min(minWhDist, p.distance(wh));
-                    if (minWhDist > maxDist) {
-                        maxDist = minWhDist;
+                    double dist = p.distance(depot);
+                    if (dist > maxDist) {
+                        maxDist = dist;
                         furthestNode = p;
                     }
                 }
@@ -189,7 +180,7 @@ public class RouteSummaryGui extends JFrame {
             double totalActual = calculateFleetTotalDistance(actualRoutes, true);
 
             // Expand box height to fit the new totals at the bottom
-            int boxHeight = 50 + (warehouses.size() * 18) + (numAgents * 20) + 55;
+            int boxHeight = 50 + (numAgents * 20) + 55;
             g2d.setColor(new Color(20, 20, 25, 210));
             g2d.fillRoundRect(10, 10, 220, boxHeight, 15, 15);
             g2d.setColor(new Color(80, 80, 90));
@@ -201,16 +192,11 @@ public class RouteSummaryGui extends JFrame {
             g2d.drawString("SUMMARY LEGEND:", 20, ly);
             ly += 20;
 
-            int whIdx = 1;
-            for (Point wh : warehouses) {
-                g2d.setColor(Color.RED);
-                g2d.fillRect(20, ly - 9, 10, 10);
-                g2d.setColor(Color.WHITE);
-                g2d.setFont(new Font("SansSerif", Font.PLAIN, 12));
-                g2d.drawString("Warehouse W" + whIdx + " (" + wh.x + "," + wh.y + ")", 35, ly);
-                ly += 18;
-                whIdx++;
-            }
+            g2d.setColor(Color.RED);
+            g2d.fillRect(20, ly - 9, 10, 10);
+            g2d.setColor(Color.WHITE);
+            g2d.setFont(new Font("SansSerif", Font.PLAIN, 12));
+            g2d.drawString("Warehouse (50,50)", 35, ly);
 
             if (activeMap != null) {
                 int idx = 0;
@@ -265,15 +251,7 @@ public class RouteSummaryGui extends JFrame {
                 g2d.drawLine(OFFSET_X + (i * SCALE), OFFSET_Y, OFFSET_X + (i * SCALE), OFFSET_Y + (100 * SCALE));
             }
             g2d.setColor(Color.RED);
-            int whIdx = 1;
-            for (Point wh : warehouses) {
-                g2d.fillRect((wh.x * SCALE) + OFFSET_X - 10, (wh.y * SCALE) + OFFSET_Y - 10, 20, 20);
-                g2d.setColor(Color.WHITE);
-                g2d.setFont(new Font("SansSerif", Font.BOLD, 10));
-                g2d.drawString("W" + whIdx, (wh.x * SCALE) + OFFSET_X - 4, (wh.y * SCALE) + OFFSET_Y + 4);
-                g2d.setColor(Color.RED);
-                whIdx++;
-            }
+            g2d.fillRect((depot.x * SCALE) + OFFSET_X - 10, (depot.y * SCALE) + OFFSET_Y - 10, 20, 20);
         }
     }
 }

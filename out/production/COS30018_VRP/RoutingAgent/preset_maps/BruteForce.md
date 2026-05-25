@@ -448,7 +448,7 @@ Subtotal = 35.3553 + 26.9258 + 26.9258 + 26.9258 + 35.0000
 
 ## Map 10: map10_unequal_demand
 
-**Scenario:** WEIRD · 3 DAs · 10 customers · demand 1  
+**Scenario:** WEIRD · 3 DAs · 10 customers · demand 1-3  
 **Customers:** 10 | **DAs:** 3 | **Capacities:** DA1=7, DA2=7, DA3=7
 
 ### Search Space
@@ -460,7 +460,7 @@ Subtotal = 35.3553 + 26.9258 + 26.9258 + 26.9258 + 35.0000
 
 ### Optimal Solution Found
 
-**DA1** (cap=7, load=4/7)
+**DA1** (cap=7, load=6/7)
 Route: Depot → C9 → C7 → C4 → Depot
 
     Depot(50,50) → C9(40,60): √((40−50)² + (60−50)²) = √(100+100) = √200 = **14.1421**
@@ -471,7 +471,7 @@ Route: Depot → C9 → C7 → C4 → Depot
 Subtotal = 14.1421 + 14.1421 + 56.5685 + 28.2843
 **DA1 distance = 113.1371**
 
-**DA2** (cap=7, load=3/7)
+**DA2** (cap=7, load=7/7)
 Route: Depot → C6 → C10 → C5 → Depot
 
     Depot(50,50) → C6(60,80): √((60−50)² + (80−50)²) = √(100+900) = √1000 = **31.6228**
@@ -482,7 +482,7 @@ Route: Depot → C6 → C10 → C5 → Depot
 Subtotal = 31.6228 + 31.6228 + 31.6228 + 31.6228
 **DA2 distance = 126.4911**
 
-**DA3** (cap=7, load=4/7)
+**DA3** (cap=7, load=7/7)
 Route: Depot → C8 → C2 → C1 → C3 → Depot
 
     Depot(50,50) → C8(50,20): √((50−50)² + (20−50)²) = √(0+900) = √900 = **30.0000**

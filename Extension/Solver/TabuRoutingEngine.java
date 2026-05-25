@@ -6,8 +6,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 public class TabuRoutingEngine {
+
+    private static final int LOG_EVERY_N_GENERATIONS = 50;
 
     private static class Move {
         enum Type { TWO_OPT, RELOCATE }
@@ -28,8 +31,21 @@ public class TabuRoutingEngine {
         }
     }
 
-    // UPDATED SIGNATURE: Now accepts the dynamicNodes set to calculate true physical costs
-    public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities, Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength, Set<Point> dynamicNodes) {
+    public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities,
+                               Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength,
+                               Set<Point> dynamicNodes) {
+        return optimize(currentState, newParcel, capacities, directory, lockedPrefixLength, dynamicNodes, null);
+    }
+
+    /**
+     * @param logSink optional; receives solver progress (e.g. MRA GUI log). Falls back to stdout.
+     */
+    public RouteState optimize(RouteState currentState, Parcel newParcel, Map<String, Integer> capacities,
+                               Map<Point, Parcel> directory, Map<String, Integer> lockedPrefixLength,
+                               Set<Point> dynamicNodes, Consumer<String> logSink) {
+        Consumer<String> log = logSink != null ? logSink : msg -> System.out.println("[TabuSolver] " + msg);
+        String runLabel = (newParcel != null) ? ("parcel " + newParcel.getId()) : "route batch";
+
         RouteState workingState = currentState.cloneState();
 
         // ==========================================
@@ -75,10 +91,16 @@ public class TabuRoutingEngine {
         Map<Point, Integer> tabuList = new HashMap<>();
 
         RouteState globalBestState = workingState.cloneState();
-        double globalBestCost = calculateTotalCost(globalBestState, dynamicNodes);
+        double initialCost = calculateTotalCost(globalBestState, dynamicNodes);
+        double globalBestCost = initialCost;
         double currentCost = globalBestCost;
+        int generationsRun = 0;
+
+        log.accept("--- Tabu optimize (" + runLabel + ") ---");
+        log.accept("Generation 0 — initial total distance: " + formatDistance(initialCost));
 
         for (int gen = 0; gen < maxGenerations; gen++) {
+            generationsRun = gen + 1;
             Move bestMove = null;
             double bestMoveDelta = Double.MAX_VALUE;
 
@@ -186,12 +208,29 @@ public class TabuRoutingEngine {
                 if (currentCost < globalBestCost) {
                     globalBestCost = currentCost;
                     globalBestState = workingState.cloneState();
+                    log.accept("  Gen " + gen + " — new best distance: " + formatDistance(globalBestCost));
+                } else if (gen % LOG_EVERY_N_GENERATIONS == 0) {
+                    log.accept("  Gen " + gen + " — current: " + formatDistance(currentCost)
+                            + ", best: " + formatDistance(globalBestCost));
                 }
             } else {
+                log.accept("  Gen " + gen + " — no improving move; stopping early.");
                 break;
             }
         }
+
+        double saved = initialCost - globalBestCost;
+        double pct   = initialCost > 0 ? (saved / initialCost) * 100.0 : 0.0;
+        log.accept("Tabu finished after " + generationsRun + " generation(s).");
+        log.accept("  Initial distance:   " + formatDistance(initialCost));
+        log.accept("  Optimized distance: " + formatDistance(globalBestCost));
+        log.accept("  Improvement:        " + formatDistance(saved) + " (" + String.format("%.1f", pct) + "%)");
+
         return globalBestState;
+    }
+
+    private static String formatDistance(double d) {
+        return String.format("%.2f", d);
     }
 
     /** Peak load along the route; load resets when passing the virtual depot (50,50). */

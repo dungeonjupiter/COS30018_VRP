@@ -372,6 +372,10 @@ public class MasterRoutingAgent extends Agent {
         return worstWhId;
     }
 
+    private void logSolver(String msg) {
+        myGui.log(msg);
+    }
+
     private void registerParcel(Parcel p) {
         Point dest = p.getDestination();
         Parcel existing = parcelDirectory.get(dest);
@@ -429,7 +433,7 @@ public class MasterRoutingAgent extends Agent {
                 Parcel shifted = shiftParcel(p, dx, dy);
                 state = tabuEngine.optimize(state, shifted,
                         fleetCapacities, shiftedDir,
-                        new HashMap<>(), new HashSet<>());
+                        new HashMap<>(), new HashSet<>(), this::logSolver);
             }
 
             // Shift back and merge
@@ -471,7 +475,7 @@ public class MasterRoutingAgent extends Agent {
                     Parcel shifted = shiftParcel(p, dx, dy);
                     whState = tabuEngine.optimize(whState, shifted,
                             filterCapacities(agents), shiftedDir,
-                            new HashMap<>(), new HashSet<>());
+                            new HashMap<>(), new HashSet<>(), this::logSolver);
                 }
 
                 for (Map.Entry<String, List<Point>> e : whState.getRoutes().entrySet()) {
@@ -617,7 +621,7 @@ public class MasterRoutingAgent extends Agent {
         RouteState optimized = tabuEngine.optimize(
                 shiftedSnapshot, shiftedParcel,
                 fleetCapacities, shiftedDir,
-                lockedPrefixes, shiftedDynamic);
+                lockedPrefixes, shiftedDynamic, this::logSolver);
 
         Point shiftedDest = shiftedParcel.getDestination();
         if (!tabuEngine.routeContainsDestination(optimized, shiftedDest)) {

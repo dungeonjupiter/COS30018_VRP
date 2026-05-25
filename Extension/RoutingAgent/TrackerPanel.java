@@ -11,7 +11,7 @@ import java.util.List;
  *
  * Changes from original:
  *   - Accepts List<Warehouse> and draws each with its own colour + label.
- *   - Agent route lines use the colour of their assigned warehouse.
+ *   - Each agent gets a unique colour; legend shows warehouse via [WH-x].
  *   - Legend shows warehouses first (with parcel count), then agents with [WH-x].
  *   - Warehouse nodes in routes are skipped from customer-dot drawing (same
  *     logic as the original depot skip, generalised for multiple depots).
@@ -37,13 +37,20 @@ public class TrackerPanel extends JPanel {
     private static final int OFFSET_Y = 60;
     private static final int SCALE    = 6;
 
-    /** Fallback palette when warehouse assignment is unknown. */
-    private final Color[] fallback = {
-            new Color(220,  53,  69),
+    /** Distinct colours per agent (not shared by warehouse). */
+    private static final Color[] AGENT_PALETTE = {
             new Color(  0, 123, 255),
+            new Color(220,  53,  69),
             new Color( 40, 167,  69),
             new Color(253, 126,  20),
-            new Color(111,  66, 193)
+            new Color(111,  66, 193),
+            new Color( 23, 162, 184),
+            new Color(255, 193,   7),
+            new Color(232,  62, 140),
+            new Color(102, 205, 170),
+            new Color(153, 102, 255),
+            new Color(255, 159,  64),
+            new Color( 72, 201, 176)
     };
 
     public TrackerPanel() { setBackground(new Color(30, 30, 35)); }
@@ -110,10 +117,11 @@ public class TrackerPanel extends JPanel {
             }
         }
 
-        // Agent routes and positions (logic unchanged; colour now warehouse-based)
-        int colorIdx = 0;
-        for (String name : currentLocs.keySet()) {
-            Color c    = agentColor(name, colorIdx++);
+        // Agent routes — one unique colour per DA (sorted for stable assignment)
+        List<String> agentNames = sortedAgentNames();
+        for (int i = 0; i < agentNames.size(); i++) {
+            String name = agentNames.get(i);
+            Color c     = agentColor(name, i);
             Point live = currentLocs.get(name);
             List<Point> rem       = remainingPaths.get(name);
             List<Point> initRoute = initialPlanned.get(name);
@@ -224,11 +232,12 @@ public class TrackerPanel extends JPanel {
         g2d.setColor(new Color(80, 80, 90));
         g2d.drawLine(15, ly, 205, ly);
 
-        // Agents section
-        int idx = 0;
-        for (String name : currentLocs.keySet()) {
+        // Agents section (unique colour per agent)
+        List<String> agentNames = sortedAgentNames();
+        for (int idx = 0; idx < agentNames.size(); idx++) {
+            String name = agentNames.get(idx);
             ly += 20;
-            Color c = agentColor(name, idx++);
+            Color c = agentColor(name, idx);
             int   currentLoad = 0;
             List<Point> rem = remainingPaths.get(name);
             if (rem != null && parcelDir != null) {
@@ -287,14 +296,36 @@ public class TrackerPanel extends JPanel {
         return false;
     }
 
-    /** Return the warehouse colour for this agent, or a fallback. */
-    private Color agentColor(String agentName, int fallbackIdx) {
-        int whId = agentWhIds.getOrDefault(agentName, -1);
-        if (whId >= 0) {
-            for (Warehouse wh : warehouses) {
-                if (wh.getId() == whId) return wh.getColor();
-            }
+    /** Stable sort so colours do not swap between repaints. */
+    private List<String> sortedAgentNames() {
+        List<String> names = new ArrayList<>(currentLocs.keySet());
+        names.sort((a, b) -> {
+            int na = parseAgentNumber(a);
+            int nb = parseAgentNumber(b);
+            if (na >= 0 && nb >= 0) return Integer.compare(na, nb);
+            if (na >= 0) return -1;
+            if (nb >= 0) return 1;
+            return a.compareTo(b);
+        });
+        return names;
+    }
+
+    private static int parseAgentNumber(String name) {
+        if (name != null && name.startsWith("DA")) {
+            try {
+                return Integer.parseInt(name.substring(2));
+            } catch (NumberFormatException ignored) { }
         }
-        return fallback[Math.abs(fallbackIdx) % fallback.length];
+        return -1;
+    }
+
+    /** Unique colour per agent; warehouse shown in legend via [WH-x] only. */
+    private Color agentColor(String agentName, int paletteIndex) {
+        int idx = paletteIndex;
+        int parsed = parseAgentNumber(agentName);
+        if (parsed > 0) idx = parsed - 1;
+        if (idx < AGENT_PALETTE.length) return AGENT_PALETTE[idx % AGENT_PALETTE.length];
+        float hue = (idx * 0.381966f) % 1.0f;
+        return Color.getHSBColor(hue, 0.72f, 0.95f);
     }
 }

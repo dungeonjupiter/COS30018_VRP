@@ -18,10 +18,7 @@ public class DeliveryAgent extends Agent {
     private List<Point> remainingStops = new ArrayList<>();
 
     private int maxCapacity = 5;
-    private int defaultCapacity = 5;
-
-    /** Length of {@code ROUTE:5:5|} prefix before coordinate list in route ACL. */
-    private static final int ROUTE_COORDS_OFFSET = "ROUTE:5:5|".length();
+    private int freeCapacity = 5;
 
     @Override
     protected void setup() {
@@ -31,21 +28,20 @@ public class DeliveryAgent extends Agent {
         if (args != null && args.length > 0) {
             String[] parts = args[0].toString().split(",");
             currentLocation = new Point(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
-            defaultCapacity = Integer.parseInt(parts[2]);
+            int initCap = Integer.parseInt(parts[2]);
 
             // Check if MRA requested the Capacity GUI
             if (args.length > 1 && args[1].toString().equals("SHOW_GUI")) {
                 showGui = true;
             } else {
-                updateCapacity(defaultCapacity);
+                updateCapacity(initCap);
             }
         }
 
         if (showGui) {
             System.out.println(getLocalName() + " popping up GUI for capacity...");
-            final int capDefault = defaultCapacity;
             java.awt.EventQueue.invokeLater(() -> {
-                DeliveryAgentGui gui = new DeliveryAgentGui(this, capDefault);
+                DeliveryAgentGui gui = new DeliveryAgentGui(this);
                 gui.setVisible(true);
             });
         }
@@ -86,23 +82,14 @@ public class DeliveryAgent extends Agent {
                 MessageTemplate mt = MessageTemplate.MatchConversationId(CID_ROUTE);
                 ACLMessage msg = receive(mt);
                 if (msg != null) {
-                    String raw = msg.getContent();
-                    if (raw == null || raw.length() <= ROUTE_COORDS_OFFSET) {
-                        remainingStops = new ArrayList<>();
-                    } else {
-                        String content = raw.substring(ROUTE_COORDS_OFFSET);
-                        List<Point> newRoute = new ArrayList<>();
-                        if (!content.isBlank()) {
-                            for (String c : content.split(",")) {
-                                if (c.isBlank()) continue;
-                                String[] xy = c.split(":");
-                                if (xy.length < 2) continue;
-                                newRoute.add(new Point(Integer.parseInt(xy[0].trim()),
-                                        Integer.parseInt(xy[1].trim())));
-                            }
-                        }
-                        remainingStops = newRoute;
+                    String content = msg.getContent().substring(10);
+                    String[] coords = content.split(",");
+                    List<Point> newRoute = new ArrayList<>();
+                    for (String c : coords) {
+                        String[] xy = c.split(":");
+                        newRoute.add(new Point(Integer.parseInt(xy[0]), Integer.parseInt(xy[1])));
                     }
+                    remainingStops = newRoute;
                 } else { block(); }
             }
         });
@@ -110,6 +97,7 @@ public class DeliveryAgent extends Agent {
 
     public void updateCapacity(int cap) {
         this.maxCapacity = cap;
+        this.freeCapacity = cap;
         ACLMessage msg = new ACLMessage(ACLMessage.INFORM);
         msg.addReceiver(new jade.core.AID("MRA", jade.core.AID.ISLOCALNAME));
         msg.setConversationId("vrp-capacity");

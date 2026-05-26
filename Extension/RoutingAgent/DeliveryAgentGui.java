@@ -15,19 +15,16 @@ import javax.swing.JTextField;
 
 public class DeliveryAgentGui extends JFrame {
     private final DeliveryAgent myAgent;
-    private final int defaultCapacity;
     private JTextField capacityField;
-    private boolean confirmed;
 
-    public DeliveryAgentGui(DeliveryAgent a, int defaultCapacity) {
+    public DeliveryAgentGui(DeliveryAgent a) {
         super(a.getLocalName() + " Configuration");
         myAgent = a;
-        this.defaultCapacity = defaultCapacity;
 
         JPanel p = new JPanel(new GridLayout(1, 2, 10, 10));
         p.setBorder(javax.swing.BorderFactory.createEmptyBorder(10, 10, 10, 10));
         p.add(new JLabel("Set Max Capacity:"));
-        capacityField = new JTextField(String.valueOf(defaultCapacity));
+        capacityField = new JTextField("5");
         p.add(capacityField);
         getContentPane().add(p, BorderLayout.CENTER);
 
@@ -37,7 +34,6 @@ public class DeliveryAgentGui extends JFrame {
                 int capacity = Integer.parseInt(capacityField.getText().trim());
                 if (capacity <= 0) throw new NumberFormatException();
 
-                confirmed = true;
                 myAgent.updateCapacity(capacity);
                 dispose();
             } catch (Exception e) {
@@ -50,12 +46,7 @@ public class DeliveryAgentGui extends JFrame {
         getContentPane().add(s, BorderLayout.SOUTH);
 
         addWindowListener(new WindowAdapter() {
-            public void windowClosing(WindowEvent e) {
-                if (!confirmed) {
-                    myAgent.updateCapacity(defaultCapacity);
-                }
-                dispose();
-            }
+            public void windowClosing(WindowEvent e) { myAgent.doDelete(); }
         });
 
         setResizable(false);

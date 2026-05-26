@@ -52,8 +52,12 @@ public class MasterRoutingAgent extends Agent {
 
     private List<Warehouse>            warehouses       = new ArrayList<>();
     private SpawnMode                  spawnMode        = SpawnMode.DISTRIBUTED;
-    /** DA local-name → warehouse id it belongs to. */
+    /** DA local-name → warehouse id it belongs to (may change via fleet repositioning). */
     private Map<String, Integer>       agentWarehouseId = new HashMap<>();
+    /** DA local-name → warehouse id at spawn (for legend / repositioning visuals). */
+    private final Map<String, Integer> agentOriginWarehouseId = new HashMap<>();
+    /** One-time drive-to-depot leg before first dispatch after repositioning. */
+    private final Map<String, Point>   repositionLegFrom = new HashMap<>();
     /** warehouse id → list of AIDs assigned to it. */
     private Map<Integer, List<AID>>    warehouseFleet   = new HashMap<>();
     /** warehouse id → parcels assigned to it. */
@@ -160,7 +164,8 @@ public class MasterRoutingAgent extends Agent {
 
         // Reset state
         initParcels.clear(); initTotalDemand = 0; previewNodes.clear();
-        dynamicDestinations.clear(); agentWarehouseId.clear(); fleet.clear();
+        dynamicDestinations.clear(); agentWarehouseId.clear(); agentOriginWarehouseId.clear();
+        repositionLegFrom.clear(); fleet.clear();
         warehouseFleet.clear(); warehouseParcels.clear();
         fleetCapacities.clear(); currentLocs.clear(); actualDrivenRoutes.clear();
         remainingPaths.clear(); activeDrivingAgents.clear(); initialPlannedRoutes.clear();
@@ -336,6 +341,7 @@ public class MasterRoutingAgent extends Agent {
             Point loc = spawnLocationForAgent(wh, slot, peersPerWh.getOrDefault(whId, 1), fixedWarehousePos);
 
             agentWarehouseId.put(name, whId);
+            agentOriginWarehouseId.put(name, whId);
             warehouseFleet.get(whId).add(new AID(name, AID.ISLOCALNAME));
             spawnDynamicAgent(name, loc.x, loc.y, 5, true);
             activeDrivingAgents.add(name);
@@ -371,6 +377,7 @@ public class MasterRoutingAgent extends Agent {
             activeDrivingAgents.add(backupName);
             currentLocs.put(backupName, targetWh.getPos());
             agentWarehouseId.put(backupName, targetWhId);
+            agentOriginWarehouseId.put(backupName, targetWhId);
             warehouseFleet.get(targetWhId).add(new AID(backupName, AID.ISLOCALNAME));
             checkCapacityLoop();
         } else {
@@ -461,10 +468,140 @@ public class MasterRoutingAgent extends Agent {
         return Set.of(getAgentWarehouse(agentName).getPos());
     }
 
+    /** Capacity resets at home depot and at any warehouse pickup stop on the route. */
+    private Set<Point> depotResetPointsFor(String agentName) {
+        Set<Point> depots = new HashSet<>(homeDepotFor(agentName));
+        for (Warehouse wh : warehouses) {
+            depots.add(wh.getPos());
+        }
+        return depots;
+    }
+
+    private int warehouseSurplus(int whId) {
+        return -warehouseDeficit(whId);
+    }
+
+    /**
+     * Before Tabu runs: permanently reassign trucks from surplus warehouses to strained ones
+     * so each regional solve stays parcel-local (no virtual-depot zig-zags).
+     */
+    private void applyFleetRepositioning() {
+        if (spawnMode == SpawnMode.CENTRALIZED || warehouses.size() <= 1) return;
+
+        myGui.log("--- Fleet Repositioning (regional truck reassignment) ---");
+        int moves = 0;
+        int guard = 0;
+
+        while (guard++ < fleet.size() * warehouses.size()) {
+            int needyWh = findMostStrainedWarehouse();
+            int deficit = warehouseDeficit(needyWh);
+            if (deficit <= 0) break;
+
+            int donorWh = findBestDonorWarehouse(needyWh);
+            if (donorWh < 0) {
+                myGui.log("  No surplus trucks left; " + deficit
+                        + " parcel slot(s) still short at "
+                        + getWarehouseById(needyWh).getName()
+                        + " (cross-warehouse pickup may follow).");
+                break;
+            }
+
+            String agent = pickAgentToReposition(donorWh);
+            if (agent == null) {
+                myGui.log("  Cannot peel another truck from "
+                        + getWarehouseById(donorWh).getName() + " without creating a deficit.");
+                break;
+            }
+
+            repositionAgent(agent, needyWh);
+            moves++;
+        }
+
+        if (moves > 0) {
+            myGui.log("Fleet repositioning complete: " + moves + " truck(s) reassigned for the day.");
+            myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths,
+                    fleetCapacities, previewNodes, warehouses);
+        } else {
+            myGui.log("  Fleet balanced — no truck moves required.");
+        }
+    }
+
+    /** Donor with largest spare capacity that is not the needy warehouse. */
+    private int findBestDonorWarehouse(int needyWhId) {
+        int bestWh     = -1;
+        int bestSurplus = 0;
+        for (Warehouse wh : warehouses) {
+            if (wh.getId() == needyWhId) continue;
+            int surplus = warehouseSurplus(wh.getId());
+            if (surplus > bestSurplus) {
+                bestSurplus = surplus;
+                bestWh      = wh.getId();
+            }
+        }
+        return bestSurplus > 0 ? bestWh : -1;
+    }
+
+    /** Pick a donor truck whose capacity does not exceed the donor warehouse's surplus. */
+    private String pickAgentToReposition(int donorWhId) {
+        int surplus = warehouseSurplus(donorWhId);
+        List<AID> agents = new ArrayList<>(warehouseFleet.getOrDefault(donorWhId, List.of()));
+        agents.sort((a, b) -> Integer.compare(
+                fleetCapacities.getOrDefault(b.getLocalName(), 5),
+                fleetCapacities.getOrDefault(a.getLocalName(), 5)));
+        for (AID aid : agents) {
+            String name = aid.getLocalName();
+            int cap = fleetCapacities.getOrDefault(name, 5);
+            if (cap <= surplus) return name;
+        }
+        return null;
+    }
+
+    private void repositionAgent(String agentName, int toWhId) {
+        int fromWhId = agentWarehouseId.getOrDefault(agentName, 0);
+        if (fromWhId == toWhId) return;
+
+        Warehouse fromWh = getWarehouseById(fromWhId);
+        Warehouse toWh   = getWarehouseById(toWhId);
+        int cap = fleetCapacities.getOrDefault(agentName, 5);
+
+        warehouseFleet.get(fromWhId).removeIf(a -> a.getLocalName().equals(agentName));
+        warehouseFleet.get(toWhId).add(new AID(agentName, AID.ISLOCALNAME));
+
+        Point fromPos = new Point(fromWh.getPos());
+        repositionLegFrom.put(agentName, fromPos);
+
+        agentWarehouseId.put(agentName, toWhId);
+        Point toLoc = spawnLocationForAgent(toWh, peersAtWarehouse(toWhId), peersAtWarehouse(toWhId), null);
+        currentLocs.put(agentName, toLoc);
+
+        myGui.log("  " + agentName + ": " + fromWh.getName() + " → " + toWh.getName()
+                + " (cap " + cap + "; will drive to " + toWh.getName() + " before deliveries)");
+    }
+
+    private int peersAtWarehouse(int whId) {
+        return warehouseFleet.getOrDefault(whId, List.of()).size();
+    }
+
+    private List<Point> prependRepositioningLeg(String agentName, List<Point> physicalStops) {
+        Point from = repositionLegFrom.remove(agentName);
+        if (from == null || physicalStops == null) return physicalStops;
+
+        Point home = getAgentWarehouse(agentName).getPos();
+        List<Point> out = new ArrayList<>();
+        out.add(from);
+        if (!from.equals(home)) {
+            out.add(new Point(home));
+        }
+        for (Point p : physicalStops) {
+            appendStopIfNew(out, p);
+        }
+        return out;
+    }
+
     private int spareCapacitySlots(String agentName, List<Point> route) {
         if (route == null) return fleetCapacities.getOrDefault(agentName, 5);
         int cap = fleetCapacities.getOrDefault(agentName, 5);
-        int peak = tabuEngine.peakRouteLoad(route, parcelDirectory, cap, Set.of(), homeDepotFor(agentName));
+        int peak = tabuEngine.peakRouteLoad(route, parcelDirectory, cap, Set.of(), depotResetPointsFor(agentName));
         return Math.max(0, cap - peak);
     }
 
@@ -604,7 +741,7 @@ public class MasterRoutingAgent extends Agent {
         if (route == null) return false;
 
         int cap = fleetCapacities.getOrDefault(agentName, 5);
-        Set<Point> homeDepot = homeDepotFor(agentName);
+        Set<Point> depots = depotResetPointsFor(agentName);
         Set<Point> noDynamic = Set.of();
 
         double bestCost  = Double.MAX_VALUE;
@@ -612,7 +749,7 @@ public class MasterRoutingAgent extends Agent {
 
         for (int i = 1; i <= route.size(); i++) {
             List<Point> test = routeAfterInsertingParcel(route, i, agentName, parcel);
-            if (tabuEngine.peakRouteLoad(test, parcelDirectory, cap, noDynamic, homeDepot) > cap) continue;
+            if (tabuEngine.peakRouteLoad(test, parcelDirectory, cap, noDynamic, depots) > cap) continue;
 
             Point from = route.get(i - 1);
             double cost = estimateCrossWarehouseLeg(from, parcel);
@@ -737,9 +874,9 @@ public class MasterRoutingAgent extends Agent {
                 List<Point> route = merged.getRoutes().get(name);
                 if (route == null) continue;
                 int cap = fleetCapacities.getOrDefault(name, 5);
-                Set<Point> home = homeDepotFor(name);
+                Set<Point> depots = depotResetPointsFor(name);
                 while (route != null
-                        && tabuEngine.peakRouteLoad(route, parcelDirectory, cap, noDynamic, home) > cap) {
+                        && tabuEngine.peakRouteLoad(route, parcelDirectory, cap, noDynamic, depots) > cap) {
                     Point removed = removeLastParcelStop(route);
                     if (removed == null) break;
                     Parcel p = parcelDirectory.get(removed);
@@ -818,7 +955,9 @@ public class MasterRoutingAgent extends Agent {
             balanceFleetAssignments(merged);
 
         } else {
-            // DISTRIBUTED: per-warehouse routing (unchanged)
+            applyFleetRepositioning();
+
+            // DISTRIBUTED: isolated per-warehouse Tabu (no cross-region parcel mixing)
             for (Warehouse wh : warehouses) {
                 List<AID>    agents  = warehouseFleet.getOrDefault(wh.getId(), List.of());
                 List<Parcel> parcels = warehouseParcels.getOrDefault(wh.getId(), List.of());
@@ -1048,6 +1187,7 @@ public class MasterRoutingAgent extends Agent {
         initialPlannedRoutes.put(name, new ArrayList<>(List.of(wh.getPos())));
         actualDrivenRoutes.put(name, new ArrayList<>(List.of(wh.getPos())));
         agentWarehouseId.put(name, warehouseId);
+        agentOriginWarehouseId.put(name, warehouseId);
         warehouseFleet.get(warehouseId).add(new AID(name, AID.ISLOCALNAME));
 
         myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths,
@@ -1210,13 +1350,22 @@ public class MasterRoutingAgent extends Agent {
                 continue;
             }
             if (mathNodes.size() < 2) {
-                remainingPaths.put(name, new ArrayList<>());
-                myGui.log(name + " idle (no deliveries assigned) — stays at "
-                        + getAgentWarehouse(name).getName());
+                Point home = getAgentWarehouse(name).getPos();
+                if (repositionLegFrom.containsKey(name)) {
+                    List<Point> relocOnly = prependRepositioningLeg(name, List.of(home));
+                    sendRouteToAgent(name, relocOnly);
+                    myGui.log(name + " repositioning to " + getAgentWarehouse(name).getName()
+                            + " (no parcels on this run).");
+                } else {
+                    remainingPaths.put(name, new ArrayList<>());
+                    myGui.log(name + " idle (no deliveries assigned) — stays at "
+                            + getAgentWarehouse(name).getName());
+                }
                 continue;
             }
 
             List<Point> physicalStops = buildPhysicalRoute(name, mathNodes);
+            physicalStops = prependRepositioningLeg(name, physicalStops);
             sendRouteToAgent(name, physicalStops);
         }
     }
@@ -1343,4 +1492,5 @@ public class MasterRoutingAgent extends Agent {
     public Map<String, List<Point>>  getInitialPlannedRoutes(){ return initialPlannedRoutes; }
     public Map<String, List<Point>>  getActualDrivenRoutes()  { return actualDrivenRoutes; }
     public Map<String, Integer>      getAgentWarehouseIds()   { return agentWarehouseId; }
+    public Map<String, Integer>      getAgentOriginWarehouseIds() { return agentOriginWarehouseId; }
 }

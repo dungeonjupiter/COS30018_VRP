@@ -32,6 +32,7 @@ public class TrackerPanel extends JPanel {
     private Map<Point, Parcel>       parcelDir      = new HashMap<>();
     private List<Warehouse>          warehouses     = new ArrayList<>();
     private Map<String, Integer>     agentWhIds     = new HashMap<>();
+    private Map<String, Integer>     agentOriginWhIds = new HashMap<>();
 
     // ── Layout constants (unchanged) ──────────────────────────────────────────
     private static final int OFFSET_X = 220;
@@ -70,6 +71,20 @@ public class TrackerPanel extends JPanel {
                            Map<Point, Parcel> directory,
                            List<Warehouse> whs,
                            Map<String, Integer> agentWarehouseIds) {
+        updateData(locs, actual, remaining, caps, initial, unassigned, directory, whs,
+                agentWarehouseIds, new HashMap<>());
+    }
+
+    public void updateData(Map<String, Point> locs,
+                           Map<String, List<Point>> actual,
+                           Map<String, List<Point>> remaining,
+                           Map<String, Integer> caps,
+                           Map<String, List<Point>> initial,
+                           List<Point> unassigned,
+                           Map<Point, Parcel> directory,
+                           List<Warehouse> whs,
+                           Map<String, Integer> agentWarehouseIds,
+                           Map<String, Integer> agentOriginWarehouseIds) {
         this.currentLocs    = locs;
         this.remainingPaths = remaining;
         this.capacities     = caps;
@@ -78,6 +93,7 @@ public class TrackerPanel extends JPanel {
         this.parcelDir      = directory;
         this.warehouses     = (whs != null) ? whs : new ArrayList<>();
         this.agentWhIds     = (agentWarehouseIds != null) ? agentWarehouseIds : new HashMap<>();
+        this.agentOriginWhIds = (agentOriginWarehouseIds != null) ? agentOriginWarehouseIds : new HashMap<>();
         repaint();
     }
 
@@ -245,7 +261,7 @@ public class TrackerPanel extends JPanel {
             ly += 20;
             Color c = agentColor(name, idx);
             int currentLoad = peakOnboardLoad(name, remainingPaths.get(name));
-            String whTag = Warehouse.displayName(agentWhIds.getOrDefault(name, 0));
+            String whTag = agentWarehouseLegendTag(name);
             g2d.setColor(c);
             g2d.fillRect(20, ly - 9, 10, 10);
             g2d.setColor(Color.WHITE);
@@ -319,7 +335,7 @@ public class TrackerPanel extends JPanel {
         return -1;
     }
 
-    /** Peak parcels onboard (matches solver — resets only at agent home warehouse). */
+    /** Peak parcels onboard — load resets at any warehouse stop (pickup / home). */
     private int peakOnboardLoad(String agentName, List<Point> remaining) {
         int cap = capacities.getOrDefault(agentName, 5);
         if (remaining == null || remaining.isEmpty()) return 0;
@@ -327,7 +343,25 @@ public class TrackerPanel extends JPanel {
         List<Point> route = new ArrayList<>();
         route.add(home);
         route.addAll(remaining);
-        return CAPACITY_ENGINE.peakRouteLoad(route, parcelDir, cap, Set.of(), Set.of(home));
+        return CAPACITY_ENGINE.peakRouteLoad(route, parcelDir, cap, Set.of(), allWarehouseDepots());
+    }
+
+    private Set<Point> allWarehouseDepots() {
+        Set<Point> depots = new HashSet<>();
+        for (Warehouse wh : warehouses) {
+            depots.add(wh.getPos());
+        }
+        return depots;
+    }
+
+    private String agentWarehouseLegendTag(String agentName) {
+        int whId = agentWhIds.getOrDefault(agentName, 0);
+        String tag = Warehouse.displayName(whId);
+        Integer origin = agentOriginWhIds.get(agentName);
+        if (origin != null && origin != whId) {
+            tag = tag + " ← " + Warehouse.displayName(origin);
+        }
+        return tag;
     }
 
     private Point homeWarehousePos(String agentName) {

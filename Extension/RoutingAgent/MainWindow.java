@@ -514,7 +514,8 @@ public class MainWindow extends JFrame {
                 mapPanel.updateData(locs, actual, remaining, caps,
                         myAgent.getInitialPlannedRoutes(), unassigned,
                         myAgent.parcelDirectory, warehouses,
-                        myAgent.getAgentWarehouseIds()));
+                        myAgent.getAgentWarehouseIds(),
+                        myAgent.getAgentOriginWarehouseIds()));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

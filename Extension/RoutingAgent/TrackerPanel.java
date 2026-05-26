@@ -1,6 +1,7 @@
 package RoutingAgent.Extension.RoutingAgent;
 
 import RoutingAgent.Extension.Solver.Parcel;
+import RoutingAgent.Extension.Solver.TabuRoutingEngine;
 import javax.swing.*;
 import java.awt.*;
 import java.util.*;
@@ -36,6 +37,8 @@ public class TrackerPanel extends JPanel {
     private static final int OFFSET_X = 220;
     private static final int OFFSET_Y = 60;
     private static final int SCALE    = 6;
+
+    private static final TabuRoutingEngine CAPACITY_ENGINE = new TabuRoutingEngine();
 
     /** Distinct colours per agent (not shared by warehouse). */
     private static final Color[] AGENT_PALETTE = {
@@ -145,14 +148,17 @@ public class TrackerPanel extends JPanel {
                 }
             }
 
-            // Agent square at current position (unchanged)
+            // Agent marker — nudge apart when several DAs share the same coordinates
             if (live != null) {
-                int lx = live.x * SCALE + OFFSET_X;
-                int ly = live.y * SCALE + OFFSET_Y;
+                Point screen = screenPositionWithPeerOffset(name, live);
+                int lx = screen.x;
+                int ly = screen.y;
                 g2d.setColor(Color.WHITE);
                 g2d.fillRect(lx - 8, ly - 8, 16, 16);
                 g2d.setColor(c);
                 g2d.fillRect(lx - 6, ly - 6, 12, 12);
+                g2d.setFont(new Font("SansSerif", Font.BOLD, 9));
+                g2d.drawString(name, lx + 8, ly - 4);
             }
         }
     }
@@ -238,13 +244,7 @@ public class TrackerPanel extends JPanel {
             String name = agentNames.get(idx);
             ly += 20;
             Color c = agentColor(name, idx);
-            int   currentLoad = 0;
-            List<Point> rem = remainingPaths.get(name);
-            if (rem != null && parcelDir != null) {
-                for (Point p : rem) {
-                    if (parcelDir.containsKey(p)) currentLoad += parcelDir.get(p).getDemand();
-                }
-            }
+            int currentLoad = peakOnboardLoad(name, remainingPaths.get(name));
             String whTag = Warehouse.displayName(agentWhIds.getOrDefault(name, 0));
             g2d.setColor(c);
             g2d.fillRect(20, ly - 9, 10, 10);
@@ -317,6 +317,43 @@ public class TrackerPanel extends JPanel {
             } catch (NumberFormatException ignored) { }
         }
         return -1;
+    }
+
+    /** Peak parcels onboard (matches solver — resets only at agent home warehouse). */
+    private int peakOnboardLoad(String agentName, List<Point> remaining) {
+        int cap = capacities.getOrDefault(agentName, 5);
+        if (remaining == null || remaining.isEmpty()) return 0;
+        Point home = homeWarehousePos(agentName);
+        List<Point> route = new ArrayList<>();
+        route.add(home);
+        route.addAll(remaining);
+        return CAPACITY_ENGINE.peakRouteLoad(route, parcelDir, cap, Set.of(), Set.of(home));
+    }
+
+    private Point homeWarehousePos(String agentName) {
+        int whId = agentWhIds.getOrDefault(agentName, 0);
+        for (Warehouse wh : warehouses) {
+            if (wh.getId() == whId) return wh.getPos();
+        }
+        return new Point(50, 50);
+    }
+
+    /** Screen offset when multiple agents share the same map cell. */
+    private Point screenPositionWithPeerOffset(String agentName, Point mapLoc) {
+        int baseX = mapLoc.x * SCALE + OFFSET_X;
+        int baseY = mapLoc.y * SCALE + OFFSET_Y;
+        List<String> peers = new ArrayList<>();
+        for (String other : sortedAgentNames()) {
+            Point o = currentLocs.get(other);
+            if (o != null && o.equals(mapLoc)) peers.add(other);
+        }
+        if (peers.size() <= 1) return new Point(baseX, baseY);
+        int idx = peers.indexOf(agentName);
+        if (idx < 0) idx = 0;
+        double angle = (2.0 * Math.PI * idx) / peers.size();
+        int r = 10;
+        return new Point(baseX + (int) Math.round(r * Math.cos(angle)),
+                baseY + (int) Math.round(r * Math.sin(angle)));
     }
 
     /** Unique colour per agent; warehouse shown in legend via [WH-x] only. */

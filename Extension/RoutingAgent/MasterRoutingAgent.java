@@ -288,23 +288,64 @@ public class MasterRoutingAgent extends Agent {
         return false;
     }
 
+    /**
+     * Round-robin warehouse assignment for distributed mode.
+     * When agents &gt; warehouses, extra agents share a depot (e.g. 4 agents / 3 WH → two at WH-1).
+     */
+    private int warehouseIdForAgentIndex(int agentIndexOneBased) {
+        if (spawnMode == SpawnMode.CENTRALIZED || warehouses.isEmpty()) {
+            return warehouses.get(0).getId();
+        }
+        int slot = (agentIndexOneBased - 1) % warehouses.size();
+        return warehouses.get(slot).getId();
+    }
+
+    /** Slight map offset so multiple agents at one warehouse do not stack invisibly. */
+    private Point spawnLocationForAgent(Warehouse wh, int peerIndex, int peersAtWarehouse,
+                                        Point fixedWarehousePos) {
+        if (fixedWarehousePos != null) {
+            return new Point(fixedWarehousePos.x, fixedWarehousePos.y);
+        }
+        if (peersAtWarehouse <= 1) {
+            return new Point(wh.getX(), wh.getY());
+        }
+        double angle = (2.0 * Math.PI * peerIndex) / peersAtWarehouse;
+        int r = 4;
+        int x = Math.max(0, Math.min(100, wh.getX() + (int) Math.round(r * Math.cos(angle))));
+        int y = Math.max(0, Math.min(100, wh.getY() + (int) Math.round(r * Math.sin(angle))));
+        return new Point(x, y);
+    }
+
     /** Spawn numAgents DAs, distributing across warehouses per spawnMode. */
-    private void spawnAgentGroup(int numAgents, Point fileWarehousePos) {
+    private void spawnAgentGroup(int numAgents, Point fixedWarehousePos) {
         initPendingAgents = numAgents;
+
+        Map<Integer, Integer> peersPerWh = new HashMap<>();
+        for (int i = 1; i <= numAgents; i++) {
+            int whId = warehouseIdForAgentIndex(i);
+            peersPerWh.put(whId, peersPerWh.getOrDefault(whId, 0) + 1);
+        }
+        Map<Integer, Integer> peerSlotUsed = new HashMap<>();
+
         for (int i = 1; i <= numAgents; i++) {
             String    name = "DA" + i;
-            int       whId = (spawnMode == SpawnMode.CENTRALIZED || warehouses.size() == 1)
-                             ? 0 : (i - 1) % warehouses.size();
-            Warehouse wh   = warehouses.get(whId);
-            int sx = (fileWarehousePos != null) ? fileWarehousePos.x : wh.getX();
-            int sy = (fileWarehousePos != null) ? fileWarehousePos.y : wh.getY();
+            int       whId = warehouseIdForAgentIndex(i);
+            Warehouse wh   = getWarehouseById(whId);
+            int       slot   = peerSlotUsed.getOrDefault(whId, 0);
+            peerSlotUsed.put(whId, slot + 1);
+            Point loc = spawnLocationForAgent(wh, slot, peersPerWh.getOrDefault(whId, 1), fixedWarehousePos);
 
             agentWarehouseId.put(name, whId);
             warehouseFleet.get(whId).add(new AID(name, AID.ISLOCALNAME));
-            spawnDynamicAgent(name, sx, sy, 5, true);
+            spawnDynamicAgent(name, loc.x, loc.y, 5, true);
             activeDrivingAgents.add(name);
-            currentLocs.put(name, new Point(sx, sy));
-            myGui.log("  Spawned " + name + " → " + Warehouse.displayName(whId) + " at (" + sx + "," + sy + ")");
+            currentLocs.put(name, new Point(loc));
+            if (peersPerWh.getOrDefault(whId, 0) > 1) {
+                myGui.log("  Spawned " + name + " → " + wh.getName()
+                        + " at (" + loc.x + "," + loc.y + ") [shared depot, slot " + (slot + 1) + "]");
+            } else {
+                myGui.log("  Spawned " + name + " → " + wh.getName() + " at (" + loc.x + "," + loc.y + ")");
+            }
         }
     }
 
@@ -395,6 +436,338 @@ public class MasterRoutingAgent extends Agent {
         myGui.enableSummary();
     }
 
+    /** Parcels not present on any agent route after a routing pass. */
+    private List<Parcel> collectUnassignedParcels(RouteState state) {
+        Set<Point> assigned = new HashSet<>();
+        for (List<Point> route : state.getRoutes().values()) {
+            for (Point p : route) {
+                if (parcelDirectory.containsKey(p)) assigned.add(p);
+            }
+        }
+        List<Parcel> out = new ArrayList<>();
+        for (Parcel p : initParcels) {
+            if (!assigned.contains(p.getDestination())) out.add(p);
+        }
+        return out;
+    }
+
+    /**
+     * Assign a parcel to any fleet agent with spare capacity, including agents at other
+     * warehouses. {@link #dispatchRoutes} will insert a pickup stop at the parcel's source WH.
+     *
+     * @return assigned agent name, or null if no agent can serve it
+     */
+    private Set<Point> homeDepotFor(String agentName) {
+        return Set.of(getAgentWarehouse(agentName).getPos());
+    }
+
+    private int spareCapacitySlots(String agentName, List<Point> route) {
+        if (route == null) return fleetCapacities.getOrDefault(agentName, 5);
+        int cap = fleetCapacities.getOrDefault(agentName, 5);
+        int peak = tabuEngine.peakRouteLoad(route, parcelDirectory, cap, Set.of(), homeDepotFor(agentName));
+        return Math.max(0, cap - peak);
+    }
+
+    private int indexOfWarehouseStop(List<Point> route, Point whPos) {
+        if (route == null) return -1;
+        for (int j = 1; j < route.size(); j++) {
+            if (route.get(j).equals(whPos)) return j;
+        }
+        return -1;
+    }
+
+    private int warehouseIdAt(Point p) {
+        for (Warehouse wh : warehouses) {
+            if (wh.getPos().equals(p)) return wh.getId();
+        }
+        return -1;
+    }
+
+    /** Last delivery index for parcels sourced at {@code srcWhId} after a scheduled pickup. */
+    private int lastDeliveryIndexForWarehouse(List<Point> route, int pickupIdx, int srcWhId) {
+        int last = pickupIdx;
+        for (int j = pickupIdx + 1; j < route.size(); j++) {
+            Point p = route.get(j);
+            if (isWarehousePosition(p)) break;
+            Parcel info = parcelDirectory.get(p);
+            if (info != null && info.getSourceWarehouseId() == srcWhId) last = j;
+        }
+        return last;
+    }
+
+    private boolean segmentOnlyParcelsFromWh(List<Point> route, int from, int to, int srcWhId) {
+        if (from > to) return true;
+        for (int j = from; j <= to; j++) {
+            Parcel info = parcelDirectory.get(route.get(j));
+            if (info == null || info.getSourceWarehouseId() != srcWhId) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Merge duplicate warehouse visits when the DA has not collected yet — one stop per WH
+     * serves every pending parcel from that warehouse (e.g. two dynamic parcels from WH-1).
+     */
+    private void consolidateRoutePickups(List<Point> route) {
+        if (route == null || route.size() < 3) return;
+
+        for (int i = route.size() - 1; i >= 2; i--) {
+            if (route.get(i).equals(route.get(i - 1)) && isWarehousePosition(route.get(i))) {
+                route.remove(i);
+            }
+        }
+
+        boolean changed = true;
+        while (changed) {
+            changed = false;
+            for (int i = route.size() - 1; i >= 2; i--) {
+                if (!isWarehousePosition(route.get(i))) continue;
+                Point whPos = route.get(i);
+                int   whId  = warehouseIdAt(whPos);
+                if (whId < 0) continue;
+
+                for (int j = i - 1; j >= 1; j--) {
+                    if (!route.get(j).equals(whPos)) continue;
+                    if (segmentOnlyParcelsFromWh(route, j + 1, i - 1, whId)) {
+                        route.remove(i);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /** Build test route for insertion (reuses an existing WH pickup when one is already scheduled). */
+    private List<Point> routeAfterInsertingParcel(List<Point> route, int insertIndex,
+                                                  String agentName, Parcel parcel) {
+        List<Point> test = new ArrayList<>(route);
+        Point srcPos = getWarehouseById(parcel.getSourceWarehouseId()).getPos();
+        Point home   = getAgentWarehouse(agentName).getPos();
+        int   srcWhId = parcel.getSourceWarehouseId();
+
+        if (!srcPos.equals(home)) {
+            int existingPickup = indexOfWarehouseStop(route, srcPos);
+            if (existingPickup >= 0) {
+                int after = lastDeliveryIndexForWarehouse(route, existingPickup, srcWhId);
+                test.add(after + 1, parcel.getDestination());
+                return test;
+            }
+            int at = insertIndex;
+            test.add(at, new Point(srcPos));
+            at++;
+            test.add(at, parcel.getDestination());
+            return test;
+        }
+        test.add(insertIndex, parcel.getDestination());
+        return test;
+    }
+
+    private void insertParcelWithPickup(RouteState state, String agentName, int insertIndex, Parcel parcel) {
+        List<Point> route = state.getRoutes().get(agentName);
+        Point srcPos = getWarehouseById(parcel.getSourceWarehouseId()).getPos();
+        Point home   = getAgentWarehouse(agentName).getPos();
+        int   srcWhId = parcel.getSourceWarehouseId();
+
+        if (!srcPos.equals(home)) {
+            int existingPickup = indexOfWarehouseStop(route, srcPos);
+            if (existingPickup >= 0) {
+                int after = lastDeliveryIndexForWarehouse(route, existingPickup, srcWhId);
+                state.insertNode(agentName, after + 1, parcel.getDestination());
+                return;
+            }
+            int at = insertIndex;
+            state.insertNode(agentName, at, new Point(srcPos));
+            at++;
+            state.insertNode(agentName, at, parcel.getDestination());
+            return;
+        }
+        state.insertNode(agentName, insertIndex, parcel.getDestination());
+    }
+
+    /** Lower score = better. Idle DAs and proximity to the parcel's source WH are preferred. */
+    private double agentAssignmentScore(String agentName, RouteState state, Parcel parcel) {
+        if (spareCapacitySlots(agentName, state.getRoutes().get(agentName)) < parcel.getDemand()) {
+            return Double.MAX_VALUE;
+        }
+        Point loc = currentLocs.getOrDefault(agentName, getAgentWarehouse(agentName).getPos());
+        Point src = getWarehouseById(parcel.getSourceWarehouseId()).getPos();
+        double dist = loc.distance(src);
+        int parcelStops = countParcelStops(state.getRoutes().get(agentName));
+        if (parcelStops == 0) return dist - 1000.0;
+        return dist + parcelStops * 2.0;
+    }
+
+    private boolean tryAssignParcelToAgent(RouteState state, String agentName, Parcel parcel,
+                                           double[] outBestCost) {
+        List<Point> route = state.getRoutes().get(agentName);
+        if (route == null) return false;
+
+        int cap = fleetCapacities.getOrDefault(agentName, 5);
+        Set<Point> homeDepot = homeDepotFor(agentName);
+        Set<Point> noDynamic = Set.of();
+
+        double bestCost  = Double.MAX_VALUE;
+        int    bestIndex = -1;
+
+        for (int i = 1; i <= route.size(); i++) {
+            List<Point> test = routeAfterInsertingParcel(route, i, agentName, parcel);
+            if (tabuEngine.peakRouteLoad(test, parcelDirectory, cap, noDynamic, homeDepot) > cap) continue;
+
+            Point from = route.get(i - 1);
+            double cost = estimateCrossWarehouseLeg(from, parcel);
+            if (cost < bestCost) {
+                bestCost  = cost;
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0) return false;
+        insertParcelWithPickup(state, agentName, bestIndex, parcel);
+        if (outBestCost != null && outBestCost.length > 0) outBestCost[0] = bestCost;
+        return true;
+    }
+
+    /** Fleet-wide: idle / nearest DA with spare capacity (used for dynamic parcels). */
+    private String assignParcelToBestFleetAgent(RouteState state, Parcel parcel) {
+        List<String> names = fleet.stream().map(AID::getLocalName)
+                .sorted(Comparator.comparingDouble(n -> agentAssignmentScore(n, state, parcel)))
+                .collect(Collectors.toList());
+
+        String bestAgent = null;
+        double bestCost  = Double.MAX_VALUE;
+
+        for (String name : names) {
+            if (agentAssignmentScore(name, state, parcel) >= Double.MAX_VALUE) continue;
+            RouteState trial = state.cloneState();
+            double[] cost = new double[1];
+            if (!tryAssignParcelToAgent(trial, name, parcel, cost)) continue;
+            if (cost[0] < bestCost) {
+                bestCost  = cost[0];
+                bestAgent = name;
+            }
+        }
+
+        if (bestAgent == null) return null;
+        tryAssignParcelToAgent(state, bestAgent, parcel, null);
+        return bestAgent;
+    }
+
+    private String assignParcelCrossWarehouse(RouteState state, Parcel parcel) {
+        List<AID> candidates = new ArrayList<>(fleet);
+        candidates.sort((a, b) -> Integer.compare(
+                spareCapacitySlots(b.getLocalName(), state.getRoutes().get(b.getLocalName())),
+                spareCapacitySlots(a.getLocalName(), state.getRoutes().get(a.getLocalName()))));
+
+        for (AID aid : candidates) {
+            String name = aid.getLocalName();
+            if (tryAssignParcelToAgent(state, name, parcel, null)) return name;
+        }
+        return null;
+    }
+
+    /** Travel cost: from current point → source warehouse (if needed) → customer. */
+    private double estimateCrossWarehouseLeg(Point from, Parcel parcel) {
+        Point src  = getWarehouseById(parcel.getSourceWarehouseId()).getPos();
+        Point dest = parcel.getDestination();
+        if (from.equals(src)) return from.distance(dest);
+        return from.distance(src) + src.distance(dest);
+    }
+
+    /**
+     * Repeatedly assign every unassigned parcel to any DA with spare capacity (any warehouse),
+     * enforce max onboard load, then expand routes with explicit origin-warehouse pickup legs.
+     */
+    private void balanceFleetAssignments(RouteState merged) {
+        myGui.log("--- Fleet balance: free parcels → DAs with spare capacity ---");
+        int totalPlaced = 0;
+        for (int round = 0; round < 100; round++) {
+            enforceStrictCapacity(merged);
+
+            List<Parcel> free = collectUnassignedParcels(merged);
+            if (free.isEmpty()) break;
+
+            free.sort(Comparator
+                    .comparingInt((Parcel p) -> warehouseDeficit(p.getSourceWarehouseId()))
+                    .reversed());
+
+            int placed = 0;
+            for (Parcel p : free) {
+                Warehouse srcWh = getWarehouseById(p.getSourceWarehouseId());
+                String agent = assignParcelCrossWarehouse(merged, p);
+                if (agent == null) continue;
+                placed++;
+                totalPlaced++;
+                Warehouse agentWh = getAgentWarehouse(agent);
+                if (agentWh.getId() != srcWh.getId()) {
+                    myGui.log("  " + p.getId() + " @ " + srcWh.getName()
+                            + " → " + agent + " [" + agentWh.getName()
+                            + "] via pickup at (" + srcWh.getX() + "," + srcWh.getY() + ")");
+                } else {
+                    myGui.log("  " + p.getId() + " → " + agent + " (local spare capacity)");
+                }
+            }
+            if (placed == 0) break;
+        }
+
+        List<Parcel> stillFree = collectUnassignedParcels(merged);
+        if (!stillFree.isEmpty()) {
+            myGui.log("WARNING: " + stillFree.size()
+                    + " parcel(s) still unassigned — deploy standby or raise DA capacity.");
+        } else if (totalPlaced > 0) {
+            myGui.log("Fleet balance assigned " + totalPlaced + " cross-warehouse parcel(s).");
+        }
+
+        for (AID aid : fleet) {
+            List<Point> route = merged.getRoutes().get(aid.getLocalName());
+            if (route != null) consolidateRoutePickups(route);
+        }
+        applyPhysicalRoutes(merged);
+    }
+
+    /** Strip overloaded routes and push parcels to agents with spare capacity (max 5 onboard at once). */
+    private void enforceStrictCapacity(RouteState merged) {
+        Set<Point> noDynamic = Set.of();
+        boolean changed = true;
+        int guard = 0;
+        while (changed && guard++ < 500) {
+            changed = false;
+            List<Parcel> overflow = new ArrayList<>();
+            for (AID aid : fleet) {
+                String      name  = aid.getLocalName();
+                List<Point> route = merged.getRoutes().get(name);
+                if (route == null) continue;
+                int cap = fleetCapacities.getOrDefault(name, 5);
+                Set<Point> home = homeDepotFor(name);
+                while (route != null
+                        && tabuEngine.peakRouteLoad(route, parcelDirectory, cap, noDynamic, home) > cap) {
+                    Point removed = removeLastParcelStop(route);
+                    if (removed == null) break;
+                    Parcel p = parcelDirectory.get(removed);
+                    if (p != null) overflow.add(p);
+                    changed = true;
+                }
+            }
+            for (Parcel p : overflow) {
+                if (assignParcelCrossWarehouse(merged, p) != null) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+
+    /** Removes the last customer/parcel stop from the route (not the start depot). */
+    private Point removeLastParcelStop(List<Point> route) {
+        for (int i = route.size() - 1; i >= 1; i--) {
+            Point p = route.get(i);
+            if (parcelDirectory.containsKey(p)) {
+                route.remove(i);
+                return p;
+            }
+        }
+        return null;
+    }
+
 
     /**
      * Run Tabu SEPARATELY per warehouse, using coordinate translation.
@@ -440,9 +813,9 @@ public class MasterRoutingAgent extends Agent {
             for (Map.Entry<String, List<Point>> e : state.getRoutes().entrySet()) {
                 List<Point> real = shiftPoints(e.getValue(), -dx, -dy, mainWh.getPos());
                 merged.getRoutes().put(e.getKey(), real);
-                initialPlannedRoutes.put(e.getKey(), new ArrayList<>(real));
-                remainingPaths.put(e.getKey(), new ArrayList<>(real));
             }
+
+            balanceFleetAssignments(merged);
 
         } else {
             // DISTRIBUTED: per-warehouse routing (unchanged)
@@ -481,10 +854,10 @@ public class MasterRoutingAgent extends Agent {
                 for (Map.Entry<String, List<Point>> e : whState.getRoutes().entrySet()) {
                     List<Point> real = shiftPoints(e.getValue(), -dx, -dy, wh.getPos());
                     merged.getRoutes().put(e.getKey(), real);
-                    initialPlannedRoutes.put(e.getKey(), new ArrayList<>(real));
-                    remainingPaths.put(e.getKey(), new ArrayList<>(real));
                 }
             }
+
+            balanceFleetAssignments(merged);
         }
 
         // Any agent not yet in the merged state gets an empty route at their warehouse
@@ -494,16 +867,21 @@ public class MasterRoutingAgent extends Agent {
                 List<Point> solo = new ArrayList<>();
                 solo.add(getAgentWarehouse(name).getPos());
                 merged.getRoutes().put(name, solo);
-                initialPlannedRoutes.put(name, new ArrayList<>(solo));
-                remainingPaths.put(name, new ArrayList<>(solo));
+                myGui.log("WARNING: " + name + " had no route after plotting — idle at "
+                        + getAgentWarehouse(name).getName());
+            } else if (countParcelStops(merged.getRoutes().get(name)) == 0) {
+                myGui.log("NOTE: " + name + " has no parcels this run ("
+                        + Warehouse.displayName(agentWarehouseId.getOrDefault(name, 0))
+                        + " may be sharing load with a peer agent).");
             }
         }
 
+        applyPhysicalRoutes(merged);
         previewNodes.clear();
         plannedBaseState = merged;
         myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths,
                 fleetCapacities, previewNodes, warehouses);
-        myGui.log("Routes plotted. Click '3. Dispatch Fleet'.");
+        myGui.log("Routes plotted (includes origin-warehouse pickups). Click '3. Dispatch Fleet'.");
         myGui.enableDispatch();
     }
 
@@ -554,8 +932,12 @@ public class MasterRoutingAgent extends Agent {
         addBehaviour(new jade.core.behaviours.OneShotBehaviour() {
             public void action() {
                 try {
+                    List<Parcel> batch = new ArrayList<>();
                     while (!dynamicParcelQueue.isEmpty()) {
-                        runDynamicReroute(dynamicParcelQueue.pollFirst());
+                        batch.add(dynamicParcelQueue.pollFirst());
+                    }
+                    if (!batch.isEmpty()) {
+                        runDynamicRerouteBatch(batch);
                     }
                 } catch (Exception e) {
                     myGui.log("ERROR during dynamic reroute: " + e.getMessage());
@@ -568,70 +950,62 @@ public class MasterRoutingAgent extends Agent {
         });
     }
 
-    private void runDynamicReroute(Parcel newParcel) {
-        Warehouse srcWh = getWarehouseById(newParcel.getSourceWarehouseId());
-
-        List<String> candidateAgents = warehouseFleet
-                .getOrDefault(srcWh.getId(), List.of())
-                .stream()
-                .map(aid -> aid.getLocalName())
-                .collect(Collectors.toList());
-
-        RouteState           snapshot       = new RouteState();
-        Map<String, Integer> lockedPrefixes = new HashMap<>();
-
+    private RouteState buildFleetSnapshotFromRemaining() {
+        RouteState snapshot = new RouteState();
         for (AID aid : fleet) {
-            String      name      = aid.getLocalName();
-            Point       loc       = currentLocs.getOrDefault(name, getAgentWarehouse(name).getPos());
-            List<Point> remaining = remainingPaths.getOrDefault(name, new ArrayList<>());
-
+            String name = aid.getLocalName();
+            Point  loc  = currentLocs.getOrDefault(name, getAgentWarehouse(name).getPos());
             snapshot.addAgent(name, loc);
-            for (int i = 0; i < remaining.size(); i++) {
-                snapshot.insertNode(name, i + 1, remaining.get(i));
+            for (Point p : remainingPaths.getOrDefault(name, List.of())) {
+                snapshot.insertNode(name, snapshot.getRoutes().get(name).size(), p);
             }
-            if (!candidateAgents.contains(name)) {
-                lockedPrefixes.put(name, remaining.size());
+        }
+        return snapshot;
+    }
+
+    /**
+     * Assign a batch of dynamic parcels in one pass: pick idle/nearest DAs fleet-wide,
+     * reuse one warehouse pickup per source WH, then dispatch once.
+     */
+    private void runDynamicRerouteBatch(List<Parcel> parcels) {
+        RouteState snapshot = buildFleetSnapshotFromRemaining();
+        Set<String> affected = new HashSet<>();
+
+        myGui.log("--- Dynamic batch: " + parcels.size() + " parcel(s), fleet-wide assignment ---");
+
+        for (Parcel p : parcels) {
+            Warehouse srcWh = getWarehouseById(p.getSourceWarehouseId());
+            String agent = assignParcelToBestFleetAgent(snapshot, p);
+            if (agent == null) {
+                myGui.log("WARNING: No DA with capacity for " + p.getId() + " from " + srcWh.getName());
                 continue;
             }
-
-            int lockCount = 0;
-            if (!remaining.isEmpty()) {
-                Point agentWhPos   = getAgentWarehouse(name).getPos();
-                int   nextDepotIdx = remaining.indexOf(agentWhPos);
-                lockCount = (nextDepotIdx == -1) ? remaining.size() : nextDepotIdx;
-                lockCount = Math.max(lockCount, 1);
-                if (loc.distance(remaining.get(0)) < 15.0 && remaining.size() > 1) {
-                    lockCount = Math.max(lockCount, 2);
-                }
+            affected.add(agent);
+            Warehouse agentWh = getAgentWarehouse(agent);
+            if (agentWh.getId() != srcWh.getId()) {
+                myGui.log("  " + p.getId() + " → " + agent + " (nearest/idle; pickup at "
+                        + srcWh.getName() + ")");
+            } else {
+                myGui.log("  " + p.getId() + " → " + agent + " (local; shared WH pickup if pending)");
             }
-            lockedPrefixes.put(name, lockCount);
         }
 
-        Set<Point> dynamicSnapshot = new HashSet<>(dynamicDestinations);
-        int dx = 50 - srcWh.getX();
-        int dy = 50 - srcWh.getY();
-
-        RouteState         shiftedSnapshot = shiftStateIn(snapshot, dx, dy);
-        Parcel             shiftedParcel   = shiftParcel(newParcel, dx, dy);
-        Map<Point, Parcel> shiftedDir      = buildShiftedDirectory(dx, dy);
-        Set<Point>         shiftedDynamic  = dynamicSnapshot.stream()
-                .map(p -> new Point(p.x + dx, p.y + dy))
-                .collect(Collectors.toSet());
-
-        RouteState optimized = tabuEngine.optimize(
-                shiftedSnapshot, shiftedParcel,
-                fleetCapacities, shiftedDir,
-                lockedPrefixes, shiftedDynamic, this::logSolver);
-
-        Point shiftedDest = shiftedParcel.getDestination();
-        if (!tabuEngine.routeContainsDestination(optimized, shiftedDest)) {
-            myGui.log("WARNING: Tabu could not place " + newParcel.getId()
-                    + " — no feasible route with current capacity.");
-            return;
+        for (AID aid : fleet) {
+            String name = aid.getLocalName();
+            List<Point> route = snapshot.getRoutes().get(name);
+            if (route != null) consolidateRoutePickups(route);
         }
 
-        RouteState real = shiftStateBack(optimized, -dx, -dy, srcWh.getPos());
-        dispatchRoutes(real, newParcel);
+        for (String name : affected) {
+            List<Point> route = snapshot.getRoutes().get(name);
+            if (route != null && plannedBaseState != null) {
+                plannedBaseState.getRoutes().put(name, new ArrayList<>(route));
+            }
+        }
+
+        dispatchRoutesForDynamic(snapshot, affected);
+        myGui.updateMap(currentLocs, actualDrivenRoutes, remainingPaths,
+                fleetCapacities, previewNodes, warehouses);
     }
 
 
@@ -686,70 +1060,164 @@ public class MasterRoutingAgent extends Agent {
      * Virtual-depot (50,50) nodes are translated to the agent's actual warehouse.
      * Dynamic parcels get a warehouse pickup inserted before their destination.
      */
+    private int countParcelStops(List<Point> route) {
+        if (route == null) return 0;
+        int n = 0;
+        for (Point p : route) {
+            if (parcelDirectory.containsKey(p)) n++;
+        }
+        return n;
+    }
+
+    /**
+     * Turn solver route (depot + optional embedded WH pickups + customer nodes) into
+     * the stop sequence the DA actually drives, including origin-warehouse collection legs.
+     */
+    private List<Point> buildPhysicalRoute(String agentName, List<Point> mathNodes) {
+        if (mathNodes == null || mathNodes.size() < 2) return new ArrayList<>();
+
+        Warehouse agentWh    = getAgentWarehouse(agentName);
+        Point     agentWhPos = agentWh.getPos();
+
+        List<Point> physicalStops     = new ArrayList<>();
+        Set<Point>  visitedWarehouses = new HashSet<>();
+
+        for (int i = 1; i < mathNodes.size(); i++) {
+            Point p = mathNodes.get(i);
+
+            if (p.equals(virtualDepot) && !agentWhPos.equals(virtualDepot)) {
+                p = new Point(agentWhPos);
+            }
+
+            if (p.equals(agentWhPos)) {
+                visitedWarehouses.add(agentWhPos);
+                appendStopIfNew(physicalStops, agentWhPos);
+                continue;
+            }
+
+            if (isWarehousePosition(p)) {
+                appendStopIfNew(physicalStops, p);
+                visitedWarehouses.add(p);
+                continue;
+            }
+
+            Parcel info = parcelDirectory.get(p);
+            if (info != null) {
+                Point srcWhPos = getWarehouseById(info.getSourceWarehouseId()).getPos();
+                if (!visitedWarehouses.contains(srcWhPos)
+                        && !pickupScheduledBefore(mathNodes, i, srcWhPos)) {
+                    appendStopIfNew(physicalStops, srcWhPos);
+                    visitedWarehouses.add(srcWhPos);
+                }
+            }
+            physicalStops.add(p);
+        }
+
+        if (!physicalStops.isEmpty()
+                && !physicalStops.get(physicalStops.size() - 1).equals(agentWhPos)) {
+            physicalStops.add(new Point(agentWhPos));
+        }
+        return physicalStops;
+    }
+
+    private static void appendStopIfNew(List<Point> stops, Point p) {
+        if (stops.isEmpty() || !stops.get(stops.size() - 1).equals(p)) {
+            stops.add(new Point(p));
+        }
+    }
+
+    private boolean pickupScheduledBefore(List<Point> route, int parcelIndex, Point srcWhPos) {
+        for (int j = 1; j < parcelIndex && j < route.size(); j++) {
+            if (route.get(j).equals(srcWhPos)) return true;
+        }
+        return false;
+    }
+
+    /** Stops from a live snapshot (index 0 = current GPS); already includes WH pickups from insertion. */
+    private List<Point> physicalStopsFromSnapshot(String agentName, List<Point> snapshotRoute) {
+        List<Point> stops = new ArrayList<>();
+        if (snapshotRoute == null || snapshotRoute.size() < 2) return stops;
+        for (int i = 1; i < snapshotRoute.size(); i++) {
+            stops.add(new Point(snapshotRoute.get(i)));
+        }
+        return finalizePhysicalStops(agentName, stops);
+    }
+
+    private List<Point> finalizePhysicalStops(String agentName, List<Point> stops) {
+        consolidateRoutePickups(stops);
+        Point home = getAgentWarehouse(agentName).getPos();
+        if (!stops.isEmpty() && !stops.get(stops.size() - 1).equals(home)) {
+            stops.add(new Point(home));
+        }
+        return stops;
+    }
+
+    private void sendRouteToAgent(String agentName, List<Point> physicalStops) {
+        if (physicalStops == null || physicalStops.isEmpty()) return;
+
+        StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
+        for (int i = 0; i < physicalStops.size(); i++) {
+            Point p = physicalStops.get(i);
+            sb.append(p.x).append(":").append(p.y);
+            if (i < physicalStops.size() - 1) sb.append(",");
+        }
+        ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
+        m.addReceiver(new AID(agentName, AID.ISLOCALNAME));
+        m.setConversationId(CID_ROUTE);
+        m.setContent(sb.toString());
+        send(m);
+
+        activeDrivingAgents.add(agentName);
+        remainingPaths.put(agentName, new ArrayList<>(physicalStops));
+        myGui.disableSummary();
+    }
+
+    /**
+     * Dynamic reroute only — update DAs that received new parcels. Do not rebuild routes for
+     * the rest of the fleet (avoids sending everyone back to warehouses for re-pickup).
+     */
+    private void dispatchRoutesForDynamic(RouteState snapshot, Set<String> affectedAgents) {
+        if (affectedAgents.isEmpty()) return;
+        for (String name : affectedAgents) {
+            List<Point> snapRoute = snapshot.getRoutes().get(name);
+            if (snapRoute == null || snapRoute.size() < 2) {
+                myGui.log(name + " idle after dynamic assign — no route sent.");
+                continue;
+            }
+            List<Point> physicalStops = physicalStopsFromSnapshot(name, snapRoute);
+            sendRouteToAgent(name, physicalStops);
+            myGui.log("Updated route for " + name + " only (" + physicalStops.size() + " stops).");
+        }
+    }
+
+    private void applyPhysicalRoutes(RouteState merged) {
+        for (AID aid : fleet) {
+            String name = aid.getLocalName();
+            List<Point> math   = merged.getRoutes().get(name);
+            List<Point> physical = buildPhysicalRoute(name, math);
+            initialPlannedRoutes.put(name, new ArrayList<>(physical));
+            remainingPaths.put(name, new ArrayList<>(physical));
+        }
+    }
+
+    /** Initial fleet dispatch from math-space planned routes (Plot Routes → Dispatch Fleet). */
     private void dispatchRoutes(RouteState state, Parcel dynamicParcel) {
         for (AID aid : fleet) {
             String      name      = aid.getLocalName();
             List<Point> mathNodes = state.getRoutes().get(name);
-            if (mathNodes == null || mathNodes.size() < 2) continue;
-
-            Warehouse agentWh    = getAgentWarehouse(name);
-            Point     agentWhPos = agentWh.getPos();
-
-            List<Point>  physicalStops    = new ArrayList<>();
-            Set<Point>   visitedWarehouses = new HashSet<>();
-
-            for (int i = 1; i < mathNodes.size(); i++) {
-                Point p = mathNodes.get(i);
-
-                if (p.equals(virtualDepot) && !agentWhPos.equals(virtualDepot)) {
-                    p = new Point(agentWhPos);
-                }
-
-                if (p.equals(agentWhPos)) {
-                    visitedWarehouses.add(agentWhPos);
-                    if (physicalStops.isEmpty()
-                            || !physicalStops.get(physicalStops.size()-1).equals(agentWhPos)) {
-                        physicalStops.add(new Point(agentWhPos));
-                    }
-                    continue;
-                }
-
-                Parcel info = parcelDirectory.get(p);
-                if (info != null) {
-                    Point srcWhPos = getWarehouseById(info.getSourceWarehouseId()).getPos();
-                    if (!visitedWarehouses.contains(srcWhPos)) {
-                        if (physicalStops.isEmpty()
-                                || !physicalStops.get(physicalStops.size() - 1).equals(srcWhPos)) {
-                            physicalStops.add(new Point(srcWhPos));
-                        }
-                        visitedWarehouses.add(srcWhPos);
-                    }
-                }
-                physicalStops.add(p);
+            if (mathNodes == null) {
+                myGui.log("WARNING: No route in plan for " + name + " — skipped dispatch.");
+                continue;
+            }
+            if (mathNodes.size() < 2) {
+                remainingPaths.put(name, new ArrayList<>());
+                myGui.log(name + " idle (no deliveries assigned) — stays at "
+                        + getAgentWarehouse(name).getName());
+                continue;
             }
 
-            if (!physicalStops.isEmpty()
-                    && !physicalStops.get(physicalStops.size()-1).equals(agentWhPos)) {
-                physicalStops.add(new Point(agentWhPos));
-            }
-
-            StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
-            for (int i = 0; i < physicalStops.size(); i++) {
-                Point p = physicalStops.get(i);
-                sb.append(p.x).append(":").append(p.y);
-                if (i < physicalStops.size()-1) sb.append(",");
-            }
-            ACLMessage m = new ACLMessage(ACLMessage.PROPOSE);
-            m.addReceiver(aid);
-            m.setConversationId(CID_ROUTE);
-            m.setContent(sb.toString());
-            send(m);
-
-            if (!physicalStops.isEmpty()) {
-                activeDrivingAgents.add(name);
-                remainingPaths.put(name, new ArrayList<>(physicalStops));
-                myGui.disableSummary();
-            }
+            List<Point> physicalStops = buildPhysicalRoute(name, mathNodes);
+            sendRouteToAgent(name, physicalStops);
         }
     }
 

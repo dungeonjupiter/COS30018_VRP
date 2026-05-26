@@ -6,7 +6,7 @@ import java.awt.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-
+import java.util.HashMap;
 /**
  * RouteSummaryGui — End-of-day route summary window.
  *
@@ -98,6 +98,21 @@ public class RouteSummaryGui extends JFrame {
             return false;
         }
 
+        private double calculateTotalDistance(Map<String, List<Point>> routes) {
+            double total = 0;
+            if (routes == null) return 0;
+            for (List<Point> route : routes.values()) {
+                if (route == null || route.isEmpty()) continue;
+                Point prev = route.get(0);
+                for (int i = 1; i < route.size(); i++) {
+                    Point curr = route.get(i);
+                    total += prev.distance(curr);
+                    prev = curr;
+                }
+            }
+            return total;
+        }
+
         /** Smooth GPS trace: keep only warehouse nodes and delivery stops. */
         private List<Point> smoothActualRoute(List<Point> rawGps) {
             if (rawGps == null || rawGps.isEmpty()) return rawGps;
@@ -121,65 +136,84 @@ public class RouteSummaryGui extends JFrame {
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
             drawGridAndWarehouses(g2d);
-            drawLegend(g2d);
 
+            // 1. Draw the Legend and get the final Y-position (ly)
+            int ly = drawLegend(g2d);
+
+            // 2. Draw the Routes
             Map<String, List<Point>> active = showingInitial ? initialRoutes : actualRoutes;
-            if (active == null || active.isEmpty()) return;
+            if (active != null && !active.isEmpty()) {
+                int colorIdx = 0;
+                for (String name : active.keySet()) {
+                    Color agentColor = agentColors[colorIdx % agentColors.length];
+                    List<Point> path = active.get(name);
+                    if (!showingInitial) path = smoothActualRoute(path);
+                    if (path == null || path.isEmpty()) { colorIdx++; continue; }
 
-            int colorIdx = 0;
-            for (String name : active.keySet()) {
-                Color agentColor = agentColors[colorIdx % agentColors.length];
-                List<Point> path = active.get(name);
-                if (!showingInitial) path = smoothActualRoute(path);
-                if (path == null || path.isEmpty()) { colorIdx++; continue; }
+                    g2d.setColor(agentColor);
+                    g2d.setStroke(new BasicStroke(2.5f));
 
-                g2d.setColor(agentColor);
-                g2d.setStroke(new BasicStroke(2.5f));
+                    int prevX = path.get(0).x * SCALE + OFFSET_X;
+                    int prevY = path.get(0).y * SCALE + OFFSET_Y;
 
-                int prevX = path.get(0).x * SCALE + OFFSET_X;
-                int prevY = path.get(0).y * SCALE + OFFSET_Y;
+                    for (int i = 1; i < path.size(); i++) {
+                        Point curr  = path.get(i);
+                        int   currX = curr.x * SCALE + OFFSET_X;
+                        int   currY = curr.y * SCALE + OFFSET_Y;
 
-                for (int i = 1; i < path.size(); i++) {
-                    Point curr  = path.get(i);
-                    int   currX = curr.x * SCALE + OFFSET_X;
-                    int   currY = curr.y * SCALE + OFFSET_Y;
+                        g2d.drawLine(prevX, prevY, currX, currY);
 
-                    g2d.drawLine(prevX, prevY, currX, currY);
+                        boolean isStop = (directory != null && directory.containsKey(curr));
+                        boolean isEnd  = (i == path.size() - 1);
 
-                    boolean isStop = (directory != null && directory.containsKey(curr));
-                    boolean isEnd  = (i == path.size() - 1);
-
-                    if (isStop || (!isWarehouse(curr) && showingInitial)) {
-                        if (currX != prevX || currY != prevY)
+                        if (isStop || (!isWarehouse(curr) && showingInitial)) {
+                            if (currX != prevX || currY != prevY)
+                                drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
+                            g2d.setColor(agentColor);
+                            g2d.fillOval(currX - 7, currY - 7, 14, 14);
+                            g2d.setColor(Color.WHITE);
+                            g2d.fillOval(currX - 2, currY - 2, 4, 4);
+                            g2d.setColor(agentColor);
+                        } else if (isEnd) {
                             drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
-                        g2d.setColor(agentColor);
-                        g2d.fillOval(currX - 7, currY - 7, 14, 14);
-                        g2d.setColor(Color.WHITE);
-                        g2d.fillOval(currX - 2, currY - 2, 4, 4);
-                        g2d.setColor(agentColor);
-                    } else if (isEnd) {
-                        drawArrowHead(g2d, prevX, prevY, currX, currY, agentColor);
+                        }
+                        prevX = currX; prevY = currY;
                     }
-                    prevX = currX; prevY = currY;
-                }
 
-                // Agent label at furthest point from first warehouse
-                Point origin = warehouses.get(0).getPos();
-                Point furthest = path.get(0);
-                double maxDist = -1;
-                for (Point p : path) {
-                    double d = p.distance(origin);
-                    if (d > maxDist) { maxDist = d; furthest = p; }
-                }
-                g2d.setColor(Color.WHITE);
-                g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
-                g2d.drawString(name,
-                        furthest.x * SCALE + OFFSET_X - 10,
-                        furthest.y * SCALE + OFFSET_Y - 15);
+                    // Agent label at furthest point
+                    Point origin = warehouses.get(0).getPos();
+                    Point furthest = path.get(0);
+                    double maxDist = -1;
+                    for (Point p : path) {
+                        double d = p.distance(origin);
+                        if (d > maxDist) { maxDist = d; furthest = p; }
+                    }
+                    g2d.setColor(Color.WHITE);
+                    g2d.setFont(new Font("SansSerif", Font.BOLD, 12));
+                    g2d.drawString(name, furthest.x * SCALE + OFFSET_X - 10, furthest.y * SCALE + OFFSET_Y - 15);
 
-                colorIdx++;
+                    colorIdx++;
+                }
             }
-        }
+
+            // 3. Draw the Totals at the bottom of the Legend (Outside the loop!)
+            double totalPlanned = calculateTotalDistance(initialRoutes);
+
+            Map<String, List<Point>> mathematicallySmoothedRoutes = new HashMap<>();
+            if (actualRoutes != null) {
+                for (Map.Entry<String, List<Point>> entry : actualRoutes.entrySet()) {
+                    mathematicallySmoothedRoutes.put(entry.getKey(), smoothActualRoute(entry.getValue()));
+                }
+            }
+            double totalActual = calculateTotalDistance(mathematicallySmoothedRoutes);
+
+            ly += 30; // Move down below the legend
+            g2d.setColor(Color.WHITE);
+            g2d.setFont(new Font("SansSerif", Font.BOLD, 13));
+            g2d.drawString(String.format("Total Planned Dist: %.1f", totalPlanned), 20, ly);
+
+            ly += 20;
+            g2d.drawString(String.format("Total Actual Dist:  %.1f", totalActual), 20, ly);        }
 
         private void drawGridAndWarehouses(Graphics2D g2d) {
             // Grid
@@ -209,7 +243,7 @@ public class RouteSummaryGui extends JFrame {
             }
         }
 
-        private void drawLegend(Graphics2D g2d) {
+        private int drawLegend(Graphics2D g2d) {
             Map<String, List<Point>> active = showingInitial ? initialRoutes : actualRoutes;
             int numAgents = (active != null) ? active.size() : 0;
             int boxH = 30 + (warehouses.size() * 20) + 10 + (numAgents * 20);
@@ -249,6 +283,7 @@ public class RouteSummaryGui extends JFrame {
                     idx++;
                 }
             }
+            return ly;
         }
 
         private void drawArrowHead(Graphics2D g2d, int x1, int y1,

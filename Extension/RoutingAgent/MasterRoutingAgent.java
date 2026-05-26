@@ -49,6 +49,8 @@ public class MasterRoutingAgent extends Agent {
     private int          initTotalDemand  = 0;
     private int          initPendingAgents = 0;
     private int          backupCounter    = 0;
+    private int expectedReturns = 0;
+    private Set<String> finishedAgents = new HashSet<>();
 
     private List<Warehouse>            warehouses       = new ArrayList<>();
     private SpawnMode                  spawnMode        = SpawnMode.DISTRIBUTED;
@@ -90,12 +92,18 @@ public class MasterRoutingAgent extends Agent {
                 ACLMessage msg = receive(tpl);
                 if (msg != null) {
                     String name = msg.getSender().getLocalName();
-                    List<Point> rem = remainingPaths.getOrDefault(name, List.of());
-                    if (rem.isEmpty()) {
-                        activeDrivingAgents.remove(name);
-                    }
+
+                    // Immediately remove from active tracking
+                    activeDrivingAgents.remove(name);
+
+                    // Wipe the map line so we don't rely on the final GPS ping
+                    remainingPaths.put(name, new ArrayList<>());
+
+                    // Check if the day is over
                     tryEnableSummary();
-                } else block();
+                } else {
+                    block();
+                }
             }
         });
 
@@ -435,11 +443,13 @@ public class MasterRoutingAgent extends Agent {
     }
 
     private void tryEnableSummary() {
+        // 1. If anyone is still driving, wait.
         if (!activeDrivingAgents.isEmpty()) return;
+
+        // 2. If we are doing dynamic routing, wait.
         if (dynamicRerouteScheduled || !dynamicParcelQueue.isEmpty()) return;
-        for (List<Point> rem : remainingPaths.values()) {
-            if (rem != null && !rem.isEmpty()) return;
-        }
+
+        // 3. Otherwise, unlock! (DO NOT loop through remainingPaths here)
         myGui.enableSummary();
     }
 
@@ -1293,7 +1303,9 @@ public class MasterRoutingAgent extends Agent {
     }
 
     private void sendRouteToAgent(String agentName, List<Point> physicalStops) {
-        if (physicalStops == null || physicalStops.isEmpty()) return;
+        // CRITICAL: Must be <= 1. An idle truck has a list size of 1 (just the warehouse).
+        // If we don't block them here, they get added to activeDrivingAgents and freeze the day!
+        if (physicalStops == null || physicalStops.size() <= 1) return;
 
         StringBuilder sb = new StringBuilder(PREFIX_ROUTE + "5:5|");
         for (int i = 0; i < physicalStops.size(); i++) {

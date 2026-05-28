@@ -102,54 +102,82 @@ public class MainWindow extends JFrame {
     // ── Setup Tab ─────────────────────────────────────────────────────────────
 
     private JPanel buildSetupTab() {
-        JPanel tab = new JPanel();
-        tab.setLayout(new BoxLayout(tab, BoxLayout.Y_AXIS));
-        tab.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        JPanel innerPanel = new JPanel();
+        innerPanel.setLayout(new BoxLayout(innerPanel, BoxLayout.Y_AXIS));
+        innerPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
-        tab.add(sectionLabel("Map Source"));
+        innerPanel.add(sectionLabel("Map Source"));
         mapPathLabel = new JLabel("Mode: RANDOM GENERATION");
         mapPathLabel.setFont(new Font("SansSerif", Font.ITALIC, 11));
         mapPathLabel.setAlignmentX(LEFT_ALIGNMENT);
         JPanel mapRow = new JPanel(new GridLayout(1, 2, 6, 0));
         mapRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
+        mapRow.setAlignmentX(LEFT_ALIGNMENT);
         loadMapBtn  = new JButton("Load .txt");
         clearMapBtn = new JButton("Clear Map");
         clearMapBtn.setEnabled(false);
         mapRow.add(loadMapBtn); mapRow.add(clearMapBtn);
-        tab.add(mapRow);
-        tab.add(vgap(3)); tab.add(mapPathLabel); tab.add(vgap(14));
+        innerPanel.add(mapRow);
+        innerPanel.add(vgap(3)); innerPanel.add(mapPathLabel); innerPanel.add(vgap(14));
 
-        tab.add(sectionLabel("Warehouse Settings"));
+        innerPanel.add(sectionLabel("Warehouse Settings"));
         numWarehousesBox = new JComboBox<>(new String[]{
                 "1 Warehouse  (Base Mode)",
                 "Multiple Warehouses  (add X,Y below)"});
         numWarehousesBox.setMaximumSize(new Dimension(Integer.MAX_VALUE, 28));
-        tab.add(numWarehousesBox); tab.add(vgap(6));
-        centralizedRb = new JRadioButton("Centralized — all agents at WH-1");
-        distributedRb = new JRadioButton("Distributed — spread agents evenly");
+        numWarehousesBox.setAlignmentX(LEFT_ALIGNMENT);
+        innerPanel.add(numWarehousesBox); innerPanel.add(vgap(6));
+
+        centralizedRb = new JRadioButton("Centralized — All Agents Starts At WH-1");
+        distributedRb = new JRadioButton("Distributed — Spread Agents Evenly");
         distributedRb.setSelected(true);
         ButtonGroup bg = new ButtonGroup();
         bg.add(centralizedRb); bg.add(distributedRb);
-        tab.add(centralizedRb); tab.add(distributedRb); tab.add(vgap(8));
-        tab.add(buildCustomWarehousePanel());
-        tab.add(vgap(14));
 
-        tab.add(sectionLabel("Initial Fleet"));
-        tab.add(row("Customers:", initCustomersField = new JTextField("20")));
-        tab.add(vgap(4));
-        tab.add(row("Agents:", initAgentsField = new JTextField("5")));
-        tab.add(vgap(14));
+        JPanel radioPanel = new JPanel();
+        radioPanel.setLayout(new BoxLayout(radioPanel, BoxLayout.Y_AXIS));
+        radioPanel.setAlignmentX(LEFT_ALIGNMENT);
+        radioPanel.add(centralizedRb);
+        radioPanel.add(distributedRb);
+
+        innerPanel.add(radioPanel);
+        innerPanel.add(vgap(8));
+
+        JPanel customWhPanel = buildCustomWarehousePanel();
+        customWhPanel.setAlignmentX(LEFT_ALIGNMENT);
+        innerPanel.add(customWhPanel);
+        innerPanel.add(vgap(14));
+
+        innerPanel.add(sectionLabel("Initial Fleet"));
+        innerPanel.add(row("Customers:", initCustomersField = new JTextField("20")));
+        innerPanel.add(vgap(4));
+        innerPanel.add(row("Agents:", initAgentsField = new JTextField("4")));
+        innerPanel.add(vgap(14));
 
         initBtn       = colorBtn("1.  Prepare Environment",    new Color(0, 123, 255));
         plotRoutesBtn = colorBtn("2.  Plot Routes (Math Only)", new Color(253, 126, 20));
         dispatchBtn   = colorBtn("3.  Dispatch Fleet",          new Color(40, 167, 69));
         plotRoutesBtn.setEnabled(false);
         dispatchBtn.setEnabled(false);
-        tab.add(initBtn);    tab.add(vgap(6));
-        tab.add(plotRoutesBtn); tab.add(vgap(6));
-        tab.add(dispatchBtn);
-        numWarehousesBox.addActionListener(e -> updateCustomWhPanelVisibility());
+        innerPanel.add(initBtn);    innerPanel.add(vgap(6));
+        innerPanel.add(plotRoutesBtn); innerPanel.add(vgap(6));
+        innerPanel.add(dispatchBtn);
+
+        // Listens to the dropdown and turns the radio buttons on/off automatically
+        numWarehousesBox.addActionListener(e -> {
+            boolean isMulti = numWarehousesBox.getSelectedIndex() == 1;
+            radioPanel.setVisible(isMulti);
+            updateCustomWhPanelVisibility();
+        });
+
+        // Trigger it once to set the correct initial state when the app launches
+        boolean initialMulti = numWarehousesBox.getSelectedIndex() == 1;
+        radioPanel.setVisible(initialMulti);
         updateCustomWhPanelVisibility();
+
+        JPanel tab = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+        tab.add(innerPanel);
+
         return tab;
     }
 
@@ -176,13 +204,7 @@ public class MainWindow extends JFrame {
         addWhGridCell(header, new JLabel(""), 3, 0, 0, GridBagConstraints.EAST);
         customWhPanel.add(header);
 
-        JScrollPane scroll = new JScrollPane(warehouseRowsPanel);
-        scroll.setAlignmentX(LEFT_ALIGNMENT);
-        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 120));
-        scroll.setBorder(BorderFactory.createEmptyBorder());
-        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        scroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-        customWhPanel.add(scroll);
+        customWhPanel.add(warehouseRowsPanel);
         customWhPanel.add(vgap(4));
 
         JPanel btnRow = new JPanel(new GridLayout(1, 2, 4, 0));
@@ -198,8 +220,7 @@ public class MainWindow extends JFrame {
 
         addWarehouseBtn.addActionListener(e -> {
             if (warehouseRows.size() >= MAX_WAREHOUSES) {
-                JOptionPane.showMessageDialog(this,
-                        "Maximum " + MAX_WAREHOUSES + " warehouses.");
+                JOptionPane.showMessageDialog(this, "Maximum " + MAX_WAREHOUSES + " warehouses.");
                 return;
             }
             addWarehouseRow(50, 50);
@@ -269,8 +290,9 @@ public class MainWindow extends JFrame {
 
         removeBtn.addActionListener(e -> removeWarehouseRow(entry));
         renumberWarehouseLabels();
-        warehouseRowsPanel.revalidate();
-        warehouseRowsPanel.repaint();
+
+        customWhPanel.revalidate();
+        customWhPanel.repaint();
     }
 
     private void removeWarehouseRow(WarehouseRow entry) {
@@ -282,8 +304,9 @@ public class MainWindow extends JFrame {
         warehouseRows.remove(entry);
         warehouseRowsPanel.remove(entry.panel);
         renumberWarehouseLabels();
-        warehouseRowsPanel.revalidate();
-        warehouseRowsPanel.repaint();
+
+        customWhPanel.revalidate();
+        customWhPanel.repaint();
     }
 
     private static JTextField compactCoordField(int value) {

@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 # --- CONFIGURATION ---
 WAREHOUSE = (50, 50)
 MAP_SIZE = 100
-random.seed() # Keep seed consistent for testing
+random.seed()
 NUM_CUSTOMERS = 20
 LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
 
@@ -100,7 +100,7 @@ def plot_and_format_result(best_chromosome, agent_names, capacities):
             draw_route(route_points, colors[v_idx % len(colors)], f"{aname} (Cap: {limit})")
             output_parts.append(f"{aname}:{','.join(route_indices)}")
 
-            # CRITICAL FIX: Only move to next agent if available
+            # Only move to next agent if available
             if v_idx < len(agent_names) - 1:
                 v_idx += 1
             else:
@@ -153,13 +153,13 @@ if __name__ == "__main__":
         caps = [int(c) for c in sys.argv[2].split(',')]
         file_path = sys.argv[4]
 
-        # --- FILE LOADING LOGIC ---
+        # FILE LOADING LOGIC
         if file_path != "RANDOM":
             LOCATIONS = []
             try:
                 with open(file_path, 'r') as f:
                     for line in f:
-                        if line.strip(): # Skip empty lines
+                        if line.strip():
                             x, y, d = map(int, line.strip().split(','))
                             LOCATIONS.append((x, y, d))
                 NUM_CUSTOMERS = len(LOCATIONS)
@@ -172,7 +172,7 @@ if __name__ == "__main__":
             NUM_CUSTOMERS = int(sys.argv[3])
             LOCATIONS = [(random.randint(0, MAP_SIZE), random.randint(0, MAP_SIZE), 1) for _ in range(NUM_CUSTOMERS)]
 
-        # --- GA SETUP ---
+        # GA SETUP
         pop_size = 200
         generations = 800
         MUTATION_RATE = 0.4
@@ -181,7 +181,7 @@ if __name__ == "__main__":
 
         print("Starting Genetic Algorithm optimization...", flush=True)
 
-        # --- EVOLUTION LOOP WITH TERMINAL OUTPUT ---
+        # EVOLUTION LOOP WITH TERMINAL OUTPUT
         for gen in range(generations):
             pop = sorted(pop, key=lambda x: fitness(x, caps), reverse=True)
             next_gen = pop[:10] # Elitism

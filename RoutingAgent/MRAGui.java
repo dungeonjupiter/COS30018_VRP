@@ -15,7 +15,6 @@ public class MRAGui extends JFrame {
         super("MRA System Configuration");
         myAgent = a;
 
-        // Increased to 5 rows to make room for the Algorithm dropdown
         JPanel panel = new JPanel(new GridLayout(5, 2, 10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(15, 15, 15, 15));
 

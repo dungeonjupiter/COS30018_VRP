@@ -45,6 +45,7 @@ class TabuVRP:
         self.num_customers = len(locations)
         self.capacities = capacities
         self.agent_names = agent_names
+        # Create a simple list of IDs [0, 1, 2, ..., N-1] to represent customers
         self.customer_ids = list(range(self.num_customers))
 
     def calculate_cost(self, sequence):
@@ -57,42 +58,52 @@ class TabuVRP:
             demand = self.locations[cust_idx][2]
             limit = self.capacities[min(v_idx, len(self.capacities) - 1)]
 
+            # Check if adding this customer exceeds the current agent's capacity
             if current_load + demand > limit:
+                # Return to warehouse
                 total_dist += calculate_distance(current_pos, WAREHOUSE)
                 current_pos = WAREHOUSE
                 current_load = 0
 
+                # Switch to the next available vehicle
                 if v_idx < len(self.agent_names) - 1:
                     v_idx += 1
                 else:
+                    # Penalty: Fleet is entirely out of capacity
                     total_dist += 99999
 
+            # Drive to the next customer
             total_dist += calculate_distance(current_pos, self.locations[cust_idx][:2])
             current_pos = self.locations[cust_idx][:2]
             current_load += demand
 
+        # Final vehicle must return to the warehouse
         total_dist += calculate_distance(current_pos, WAREHOUSE)
         return total_dist
 
     def run(self, iterations=DEFAULT_ITERATIONS, tabu_tenure=DEFAULT_TABU_TENURE):
         print("Starting Tabu Search optimization...", flush=True)
 
+        # 1. Generate an initial random solution
         current_sol = random.sample(self.customer_ids, len(self.customer_ids))
         best_sol = copy.deepcopy(current_sol)
         best_cost = self.calculate_cost(best_sol)
-        tabu_list = {}
+        tabu_list = {} # Dictionary tracking {move: remaining_tenure}
 
         for iteration in range(iterations):
             neighbors = []
+            # Calculate a reasonable neighborhood size to search based on customer count
             num_swaps = min(40, len(self.customer_ids) * (len(self.customer_ids) - 1) // 2)
 
             if num_swaps < 1:
                 num_swaps = 1
 
+            # 2. Generate local neighborhood (Swapping two random nodes)
             for _ in range(num_swaps):
                 idx1, idx2 = random.sample(range(self.num_customers), 2)
                 neighbor = copy.deepcopy(current_sol)
                 neighbor[idx1], neighbor[idx2] = neighbor[idx2], neighbor[idx1]
+                # The 'move' is stored as a sorted tuple to ignore swap direction
                 move = tuple(sorted((idx1, idx2)))
                 neighbors.append((neighbor, move))
 
@@ -100,23 +111,28 @@ class TabuVRP:
             best_neighbor_cost = float("inf")
             chosen_move = None
 
+            # 3. Evaluate neighbors and apply the Aspiration Criterion
             for neighbor, move in neighbors:
                 cost = self.calculate_cost(neighbor)
 
+                # Accept if move is NOT tabu, OR if it beats the global best (Aspiration)
                 if move not in tabu_list or cost < best_cost:
                     if cost < best_neighbor_cost:
                         best_neighbor_cost = cost
                         best_neighbor = neighbor
                         chosen_move = move
 
+            # 4. Commit to the best local move and update memories
             if best_neighbor is not None:
                 current_sol = best_neighbor
                 tabu_list[chosen_move] = tabu_tenure
 
+                # Check if a new global optimum is found
                 if best_neighbor_cost < best_cost:
                     best_cost = best_neighbor_cost
                     best_sol = copy.deepcopy(best_neighbor)
 
+            # 5. Decrement tabu tenures and clean up expired moves
             tabu_list = {move: tenure - 1 for move, tenure in tabu_list.items() if tenure > 1}
 
             if iteration % 100 == 0:
@@ -153,6 +169,7 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
                 plt.plot(solid_x, solid_y, color=color, linewidth=1.2, alpha=0.35)
                 plt.plot(solid_x, solid_y, color=color, linewidth=2, label=label)
 
+            # Draw the return trip to the warehouse as a dotted line
             return_x = [path_points[-2][0], path_points[-1][0]]
             return_y = [path_points[-2][1], path_points[-1][1]]
             plt.plot(return_x, return_y, color=color, linewidth=2, linestyle=":")
@@ -168,10 +185,12 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
                 arrowprops=dict(arrowstyle="->", color=color, lw=1.8, linestyle=linestyle, shrinkA=0, shrinkB=0),
             )
 
+    # Iterate through the optimal sequence to build the final routes
     for cust_idx in best_sequence:
         loc = locations[cust_idx]
         limit = capacities[min(v_idx, len(capacities) - 1)]
 
+        # If vehicle is full, finalize its route and dispatch the next vehicle
         if current_load + loc[2] > limit:
             path_x.append(WAREHOUSE[0])
             path_y.append(WAREHOUSE[1])
@@ -187,18 +206,19 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
             else:
                 print(f"DEBUG: Agent {agent_name} forced to take additional load!", flush=True)
 
+            # Reset trackers for the newly dispatched vehicle
             current_load = 0
             path_x = [WAREHOUSE[0]]
             path_y = [WAREHOUSE[1]]
             route_indices = ["0"]
 
+        # Add customer to the current vehicle's route
         path_x.append(loc[0])
         path_y.append(loc[1])
         route_indices.append(str(cust_idx + 1))
         current_load += loc[2]
 
-    # Handle final used vehicle path
-    path_x.append(WAREHOUSE[0])
+    # Finalize the very last vehicle's route back to the depot    path_x.append(WAREHOUSE[0])
     path_y.append(WAREHOUSE[1])
     route_indices.append("0")
     agent_name = agent_names[min(v_idx, len(agent_names) - 1)]
@@ -210,6 +230,7 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
     )
     output_parts.append(f"{agent_name}:{','.join(route_indices)}")
 
+    # Mark any unused vehicles as "Standby" in the legend and output payload
     for i in range(v_idx + 1, len(agent_names)):
         standby_agent = agent_names[i]
         standby_cap = capacities[i]
@@ -236,17 +257,21 @@ def plot_and_format_result(best_sequence, locations, agent_names, capacities, sh
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 4:
+    if len(sys.argv) > 4: # Expected args: AgentNames, Capacities, CustomerCount, MapFilePath
         names = sys.argv[1].split(",")
         caps = [int(cap) for cap in sys.argv[2].split(",")]
         target_customer_count = int(sys.argv[3])
         file_path = sys.argv[4]
 
+        # Load environment and initialize Solver
         LOCATIONS = load_locations(target_customer_count, file_path)
         solver = TabuVRP(LOCATIONS, caps, names)
+        # Execute optimization
         best_sequence = solver.run(iterations=DEFAULT_ITERATIONS, tabu_tenure=DEFAULT_TABU_TENURE)
+        # Generate visual output and string payload for Java
         plot_and_format_result(best_sequence, LOCATIONS, names, caps, show_gui=True)
     else:
+        # Fallback debug execution block for testing without Java
         debug_names = ["Vehicle1", "Vehicle2", "Vehicle3"]
         debug_capacities = [7, 7, 7]
         LOCATIONS = load_locations(12, "RANDOM")

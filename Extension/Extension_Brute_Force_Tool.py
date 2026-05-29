@@ -1,5 +1,5 @@
 """
-brute_force_tool.py
+Extension_Brute_Force_Tool.py
 ====================
 Proves ground truth optimality for all 8 Extension preset maps.
 
@@ -13,7 +13,7 @@ Method:
 No external libraries required — uses only Python built-ins: math, itertools, time.
 
 Run:
-    python brute_force_tool.py
+    python Extension_Brute_Force_Tool.py
 """
 
 import math

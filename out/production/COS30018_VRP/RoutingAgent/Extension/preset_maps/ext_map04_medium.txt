@@ -1,0 +1,24 @@
+# ext_map04_medium
+# Single warehouse. 10 customers in two geographic zones. 3 DAs cap=4.
+# Load: 10 customers, 3 agents, cap=4, 1 warehouse, distributed
+WAREHOUSE 50 50
+CUSTOMER 1 15 20
+CUSTOMER 2 30 10
+CUSTOMER 3 10 35
+CUSTOMER 4 35 30
+CUSTOMER 5 20 50
+CUSTOMER 6 70 70
+CUSTOMER 7 85 80
+CUSTOMER 8 80 55
+CUSTOMER 9 65 85
+CUSTOMER 10 90 65
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 0 4
+PARCEL 5 0 5
+PARCEL 6 0 6
+PARCEL 7 0 7
+PARCEL 8 0 8
+PARCEL 9 0 9
+PARCEL 10 0 10

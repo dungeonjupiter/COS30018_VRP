@@ -1,0 +1,24 @@
+# ext_map05_3wh_local
+# 3 warehouses. 3 customers near each warehouse. 1 DA per warehouse, cap=3.
+# Load: 9 customers, 3 agents, cap=3, 3 warehouses, distributed
+WAREHOUSE 0 20 20
+WAREHOUSE 1 80 20
+WAREHOUSE 2 50 80
+CUSTOMER 1 15 15
+CUSTOMER 2 25 25
+CUSTOMER 3 10 30
+CUSTOMER 4 75 15
+CUSTOMER 5 85 25
+CUSTOMER 6 90 10
+CUSTOMER 7 45 75
+CUSTOMER 8 55 85
+CUSTOMER 9 50 92
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 1 4
+PARCEL 5 1 5
+PARCEL 6 1 6
+PARCEL 7 2 7
+PARCEL 8 2 8
+PARCEL 9 2 9

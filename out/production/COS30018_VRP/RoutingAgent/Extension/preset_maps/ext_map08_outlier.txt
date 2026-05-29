@@ -1,0 +1,27 @@
+# ext_map08_outlier
+# 3 warehouses. WH-0 has 3 normal customers + 1 extreme outlier at (2,98).
+# WH-1 and WH-2 have 3 customers each. Tests cross-cluster detour routing.
+# Load: 10 customers, 3 agents, cap=5, 3 warehouses, distributed
+WAREHOUSE 0 20 20
+WAREHOUSE 1 80 20
+WAREHOUSE 2 50 80
+CUSTOMER 1 15 15
+CUSTOMER 2 25 20
+CUSTOMER 3 10 30
+CUSTOMER 4 2 98
+CUSTOMER 5 75 15
+CUSTOMER 6 85 20
+CUSTOMER 7 90 30
+CUSTOMER 8 45 80
+CUSTOMER 9 55 85
+CUSTOMER 10 50 92
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 0 4
+PARCEL 5 1 5
+PARCEL 6 1 6
+PARCEL 7 1 7
+PARCEL 8 2 8
+PARCEL 9 2 9
+PARCEL 10 2 10

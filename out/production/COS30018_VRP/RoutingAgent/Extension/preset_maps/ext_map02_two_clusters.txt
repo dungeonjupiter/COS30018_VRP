@@ -1,0 +1,20 @@
+# ext_map02_two_clusters
+# Single warehouse. 8 customers in two tight clusters (NW and SE). 2 DAs cap=5.
+# Load: 8 customers, 2 agents, cap=5, 1 warehouse, distributed
+WAREHOUSE 50 50
+CUSTOMER 1 10 80
+CUSTOMER 2 15 85
+CUSTOMER 3 5 75
+CUSTOMER 4 20 80
+CUSTOMER 5 85 15
+CUSTOMER 6 90 20
+CUSTOMER 7 80 10
+CUSTOMER 8 90 10
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 0 4
+PARCEL 5 0 5
+PARCEL 6 0 6
+PARCEL 7 0 7
+PARCEL 8 0 8

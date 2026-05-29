@@ -1,0 +1,16 @@
+# ext_map03_linear
+# Single warehouse. 6 customers on horizontal line y=50. 2 DAs cap=3.
+# Load: 6 customers, 2 agents, cap=3, 1 warehouse, distributed
+WAREHOUSE 50 50
+CUSTOMER 1 5 50
+CUSTOMER 2 25 50
+CUSTOMER 3 40 50
+CUSTOMER 4 60 50
+CUSTOMER 5 75 50
+CUSTOMER 6 95 50
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 0 4
+PARCEL 5 0 5
+PARCEL 6 0 6

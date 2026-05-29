@@ -1,0 +1,12 @@
+# ext_map01_compass
+# Single warehouse. 4 customers at compass points. 2 DAs cap=3.
+# Load in GUI: 4 customers, 2 agents, cap=3, 1 warehouse, distributed
+WAREHOUSE 50 50
+CUSTOMER 1 50 85
+CUSTOMER 2 85 50
+CUSTOMER 3 50 15
+CUSTOMER 4 15 50
+PARCEL 1 0 1
+PARCEL 2 0 2
+PARCEL 3 0 3
+PARCEL 4 0 4

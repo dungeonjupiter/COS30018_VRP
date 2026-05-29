@@ -1,4 +1,4 @@
-# Method 3: Geometric Construction Proof — Maps 01–10
+# Method 2: Geometric Construction Proof — Maps 01–10
 
 > **What this proves:** Each map was deliberately designed with geometric properties that make the optimal solution logically provable. The geometric argument explains why no other assignment or route ordering can achieve a lower total distance.
 
